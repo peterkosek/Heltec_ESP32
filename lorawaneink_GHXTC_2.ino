@@ -18,28 +18,70 @@
  * 成都惠利特自动化科技有限公司
  * https://www.heltec.org
  * */
+#include <Arduino.h>
 #include "LoRaWan_APP.h"
 #include "Wire.h"
 #include "GXHTC.h"
 #include "img.h"
 #include "HT_DEPG0290BxS800FxX_BW.h"
+#include "sensor_solenoid.h"
+#include "esp_sleep.h"
+#include "esp32s3/ulp.h"  //  this also includes ulp_common.h 
+#include "driver/gpio.h"
+#include "driver/rtc_io.h"
+#include <Preferences.h>
+#include "soc/rtc_io_reg.h"
+#include <Arduino.h>
 
-DEPG0290BxS800FxX_BW display(5, 4, 3, 6, 2, 1, -1, 6000000); // rst,dc,cs,busy,sck,mosi,miso,frequency
+enum {
+  // count up each RTC_DATA_ATTR 16-bit word…
+  ULP_RSSI,            // 0
+  ULP_SNR,             // 1
+  ULP_BAT_PCT,         // 2
+  ULP_LAST_SENT,       // 3
+  ULP_COUNT,           // 4
+  ULP_PREV_STATE,      // 5
+  ULP_VLV_PACKET_LO,   // 6  (lower 16 bits of ValvePacket_t)
+  ULP_VLV_PACKET_HI,   // 7  (upper 16 bits)
+  ULP_PROG_START = 8   // load instructions here
+};
+
+
+enum {
+  ULP_ENTRY_LABEL   = 0,
+  ULP_NO_WAKE       = 1,
+  ULP_NO_FALL       = 2,
+};
+
+DEPG0290BxS800FxX_BW display(5, 4, 3, 6, 2, 1, -1, 6000000);  // rst,dc,cs,busy,sck,mosi,miso,frequency
 GXHTC gxhtc;
-char buffer[256];
+Preferences prefs;  // for NVM
+
+char buffer[64];
+RTC_DATA_ATTR int16_t rssi = 0;
+RTC_DATA_ATTR int16_t snr = 0;
+RTC_DATA_ATTR int16_t bat_pct = 0;
+RTC_DATA_ATTR ValvePacket_t vlv_packet = { 0 };  //  counts as two uint16_t in the RTC mem block.  
+RTC_DATA_ATTR uint16_t ulp_last_sent = 0;
+RTC_DATA_ATTR uint16_t ulp_count = 0;
+RTC_DATA_ATTR uint16_t ulp_prev_state = 0;
+uint16_t reed_count_delta = 0;
+ValvePacket_t vlv_packet_pend;  // used to keep the command and the state independent until resolved
+Preferences pref;
+
 
 /* OTAA para*/
-uint8_t devEui[] = {0x70, 0xB3, 0xD5, 0x7E, 0xD0, 0x06, 0x53, 0xee};
-uint8_t appEui[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-uint8_t appKey[] = {0x74, 0xD6, 0x6E, 0x63, 0x45, 0x82, 0x48, 0x27, 0xFE, 0xC5, 0xB7, 0x70, 0xBA, 0x2B, 0x50, 0x45};
+uint8_t devEui[] = { 0x70, 0xB3, 0xD5, 0x7E, 0xD0, 0x06, 0x53, 0xee };
+uint8_t appEui[] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+uint8_t appKey[] = { 0x74, 0xD6, 0x6E, 0x63, 0x45, 0x82, 0x48, 0x27, 0xFE, 0xC5, 0xB7, 0x70, 0xBA, 0x2B, 0x50, 0x45 };
 
 /* ABP para*/
-uint8_t nwkSKey[] = {0x15, 0xb1, 0xd0, 0xef, 0xa4, 0x63, 0xdf, 0xbe, 0x3d, 0x11, 0x18, 0x1e, 0x1e, 0xc7, 0xda, 0x85};
-uint8_t appSKey[] = {0xd7, 0x2c, 0x78, 0x75, 0x8c, 0xdc, 0xca, 0xbf, 0x55, 0xee, 0x4a, 0x77, 0x8d, 0x16, 0xef, 0x67};
+uint8_t nwkSKey[] = { 0x15, 0xb1, 0xd0, 0xef, 0xa4, 0x63, 0xdf, 0xbe, 0x3d, 0x11, 0x18, 0x1e, 0x1e, 0xc7, 0xda, 0x85 };
+uint8_t appSKey[] = { 0xd7, 0x2c, 0x78, 0x75, 0x8c, 0xdc, 0xca, 0xbf, 0x55, 0xee, 0x4a, 0x77, 0x8d, 0x16, 0xef, 0x67 };
 uint32_t devAddr = (uint32_t)0x007e6ae1;
 
 /*LoraWan channelsmask, default channels 0-7*/
-uint16_t userChannelsMask[6] = {0xff00, 0x0000, 0x0000, 0x0001, 0x0000, 0x0000};
+uint16_t userChannelsMask[6] = { 0xff00, 0x0000, 0x0000, 0x0001, 0x0000, 0x0000 };
 
 /*LoraWan region, select in arduino IDE tools*/
 LoRaMacRegion_t loraWanRegion = ACTIVE_REGION;
@@ -48,7 +90,8 @@ LoRaMacRegion_t loraWanRegion = ACTIVE_REGION;
 DeviceClass_t loraWanClass = CLASS_A;
 
 /*the application data transmission duty cycle.  value in [ms].*/
-uint32_t appTxDutyCycle = 15000 * 4 * 5;
+RTC_DATA_ATTR uint32_t appTxDutyCycle = 15000 * 2 * 1;
+RTC_DATA_ATTR uint32_t TxDutyCycle_hold;
 
 /*OTAA or ABP*/
 bool overTheAirActivation = true;
@@ -57,7 +100,7 @@ bool overTheAirActivation = true;
 bool loraWanAdr = true;
 
 /* Indicates if the node is sending confirmed or unconfirmed messages */
-bool isTxConfirmed = true;
+bool isTxConfirmed = false;
 
 /* Application port */
 uint8_t appPort = 2;
@@ -83,134 +126,340 @@ uint8_t appPort = 2;
  */
 uint8_t confirmedNbTrials = 4;
 
-/* Prepares the payload of the frame */
-static void prepareTxFrame(uint8_t port)
-{
-  /*appData size is LORAWAN_APP_DATA_MAX_SIZE which is defined in "commissioning.h".
-   *appDataSize max value is LORAWAN_APP_DATA_MAX_SIZE.
-   *if enabled AT, don't modify LORAWAN_APP_DATA_MAX_SIZE, it may cause system hanging or failure.
-   *if disabled AT, LORAWAN_APP_DATA_MAX_SIZE can be modified, the max value is reference to lorawan region and SF.
-   *for example, if use REGION_CN470,
-   *the max value for different DR can be found in MaxPayloadOfDatarateCN470 refer to DataratesCN470 and BandwidthsCN470 in "RegionCN470.h".
-   */
-  display.clear();
-  display.drawLine(0, 15, 250, 15);
-  GetNetTime();
-  gxhtc.begin(39, 38);
-  gxhtc.read_data();
-  Serial.print("Temperature:");
-  Serial.print(gxhtc.g_temperature);
-  display.setFont(ArialMT_Plain_24);
-  sprintf(buffer, "%.2f", gxhtc.g_temperature);
-  display.drawXbm(42, 55, 10, 17, temp);
-  display.drawString(53, 50, buffer);
-  Serial.print("  Humidity:");
-  Serial.println(gxhtc.g_humidity);
-  sprintf(buffer, "%.2f", gxhtc.g_humidity);
-  display.drawXbm(151, 55, 11, 16, hum);
-  display.drawString(167, 50, buffer);
-  Serial.printf("id = %X\r\n", gxhtc.read_id());
-  display.display();
-  delay(3000);
-  delay(100);
-  unsigned char *puc;
-  appDataSize = 0;
-  appData[appDataSize++] = 0x04;
-  appData[appDataSize++] = 0x00;
-  appData[appDataSize++] = 0x0A;
-  appData[appDataSize++] = 0x02;
-  puc = (unsigned char *)(&gxhtc.g_temperature);
-  appData[appDataSize++] = puc[0];
-  appData[appDataSize++] = puc[1];
-  appData[appDataSize++] = puc[2];
-  appData[appDataSize++] = puc[3];
-  appData[appDataSize++] = 0x12;
-  puc = (unsigned char *)(&gxhtc.g_humidity);
-  appData[appDataSize++] = puc[0];
-  appData[appDataSize++] = puc[1];
-  appData[appDataSize++] = puc[2];
-  appData[appDataSize++] = puc[3];
-  Wire.end();
+// Function to display the binary representation of an integer
+void displayBits32(uint32_t v) {
+  for (int i = 31; i >= 0; --i) {
+    Serial.print((v >> i) & 1);
+  }
+  Serial.printf("\nvalve A_S %d pending %d\n", (int)vlv_packet.bits.vlv_A_status, (int)vlv_packet_pend.bits.vlv_A_status);
+  Serial.printf("valve b_S %d pending %d\n", (int)vlv_packet.bits.vlv_B_status, (int)vlv_packet_pend.bits.vlv_B_status);
+  Serial.printf("valve A_o %d pending %d\n", (int)vlv_packet.bits.vlv_A_off, (int)vlv_packet_pend.bits.vlv_A_off);
+  Serial.printf("valve b_o %d pending %d\n", (int)vlv_packet.bits.vlv_B_off, (int)vlv_packet_pend.bits.vlv_B_off);
+  Serial.printf("valve A_time %d pending %d\n", (int)vlv_packet.bits.vlv_A_on_remaining, (int)vlv_packet_pend.bits.vlv_A_on_remaining);
+  Serial.printf("valve b_time %d pending %d\n", (int)vlv_packet.bits.vlv_B_on_remaining, (int)vlv_packet_pend.bits.vlv_B_on_remaining);
+  //Serial.printf("vbat read %d \n", bat_cap8());
 }
 
-void downLinkDataHandle(McpsIndication_t *mcpsIndication)
-{
+void displayPacketBits(const ValvePacket_t &p) {
+  uint32_t v = 0;
+  memcpy(&v, p.raw, sizeof(v));  // pull the raw bytes straight into a uint32_t
+  displayBits32(v);
+}
+
+//  display status draws the screen before sleep, after a delay from uploading to receive any download
+static void show_vlv_status(uint8_t vlv) {
+  switch (vlv) {
+    case 0:
+      if (vlv_packet.bits.vlv_A_status) {
+        sprintf(buffer, "A %u min", (vlv_packet.bits.vlv_A_on_remaining * CYCLE_TIME_VALVE_ON / 60000));
+      } else {
+        sprintf(buffer, "A off");
+      }
+      break;
+    case 1:
+      if (vlv_packet.bits.vlv_B_status) {
+        sprintf(buffer, "B %u min", (vlv_packet.bits.vlv_B_on_remaining * CYCLE_TIME_VALVE_ON / 60000));
+      } else {
+        sprintf(buffer, "B off");
+      }
+      break;
+  }
+}
+static void display_status() {
+  //Serial.print("VLV_STATUS      ");
+  //displayPacketBits(vlv_packet);
+  //Serial.print("VLV_STSTUS_PEND ");
+  //displayPacketBits(vlv_packet_pend);
+  display.clear();
+  display.display();
+  display.drawLine(0, 35, 120, 35);
+  display.drawLine(150, 35, 270, 35);
+  display.setFont(ArialMT_Plain_24);
+  display.setTextAlignment(TEXT_ALIGN_CENTER);
+  display.drawString(60, 5, "valve");
+  //show_vlv_status(0);
+  display.drawString(60, 40, buffer);
+  //show_vlv_status(1);
+  display.drawString(60, 65, buffer);
+  prefs.begin("flash_namespace", true);                                  // open as read only
+  display.drawString(60, 100, prefs.getString("screenMsg", "no name"));  //  default "Fupi"
+  prefs.end();
+  display.drawString(210, 5, "xxx psi");
+  display.setFont(ArialMT_Plain_16);
+  //sprintf(buffer, "battery: %u %%", bat_pct);  // bat_cap8() populates this, and is run in prepareDataFrame
+  //display.drawString(210, 50, buffer);
+  sprintf(buffer, "cycle %lu min", (uint32_t)appTxDutyCycle / 60000);  //  SHOULD BE 60000 milliseconds to mins
+  display.drawString(210, 70, buffer);
+  sprintf(buffer, "rssi (dBm): %d", rssi);
+  display.drawString(210, 90, buffer);
+  sprintf(buffer, "SNR: %d", snr);
+  display.drawString(210, 110, buffer);
+  display.display();
+  delay(3000);
+  Wire.end();
+}
+/* Prepares the payload of the frame and decrements valve counter or turns off if time is up*/
+static void prepareTxFrame(uint8_t port) {
+  /*resolve valve status -- ? do we need to turn a valve off?  if so do that and then 
+   *reset the valve cycle time if both valves are off
+   *two ways to close a valve, based on end of timer and based on a close command.  
+   *eiher way resets the cycle time only if BOTH valvees are closed.  
+   *appDataSize max value is LORAWAN_APP_DATA_MAX_SIZE.
+   *data is pressure (msb, lsb) in raw adc conversion needs to be calibrated and converted to psi
+   */
+  if (vlv_packet.bits.vlv_A_status) {
+    if (vlv_packet.bits.vlv_A_on_remaining) {
+      vlv_packet.bits.vlv_A_on_remaining--;
+    } else {
+      controlValve(0, 0);
+      vlv_packet.bits.vlv_A_status = 0;
+      if (vlv_packet.bits.vlv_B_off || !vlv_packet.bits.vlv_B_status) appTxDutyCycle = TxDutyCycle_hold;
+    }
+  }
+  if (vlv_packet.bits.vlv_B_status) {
+    if (vlv_packet.bits.vlv_B_on_remaining) {
+      vlv_packet.bits.vlv_B_on_remaining--;
+    } else {
+      controlValve(1, 0);
+      vlv_packet.bits.vlv_B_status = 0;
+      if (vlv_packet.bits.vlv_A_off || !vlv_packet.bits.vlv_A_status) appTxDutyCycle = TxDutyCycle_hold;
+    }
+  }
+  //setPowerEnable(1);
+  delay(2000);
+  unsigned char *puc;
+  appDataSize = 0;
+  appData[appDataSize++] = wPres[0];
+  appData[appDataSize++] = wPres[1];
+  appData[appDataSize++] = bat_cap8();  //  function returns a uint8_t
+  //setPowerEnable(0);
+}
+
+/* process the valve state:  Check for valve off commands first, then if on command set the TxDutyCycle
+ * and turn on the valve, set the timer as cycles based on new TxDutyCycle */
+void set_vlv_status() {
+  //  to turn off and reset the TxDutyCycle to prior or valve on
+  if (vlv_packet_pend.bits.vlv_A_off) {
+    controlValve(0, 0);
+    vlv_packet.bits.vlv_A_on_remaining = 0;
+    vlv_packet.bits.vlv_A_status = 0;
+    if (vlv_packet.bits.vlv_B_off || !vlv_packet.bits.vlv_B_status) appTxDutyCycle = TxDutyCycle_hold;
+    LoRaWAN.cycle(appTxDutyCycle);
+  }
+  if (vlv_packet_pend.bits.vlv_B_off) {
+    controlValve(1, 0);
+    vlv_packet.bits.vlv_B_on_remaining = 0;
+    vlv_packet.bits.vlv_B_status = 0;
+    if (vlv_packet.bits.vlv_A_off || !vlv_packet.bits.vlv_A_status) appTxDutyCycle = TxDutyCycle_hold;
+    LoRaWAN.cycle(appTxDutyCycle);
+  }
+
+  if (vlv_packet_pend.bits.vlv_A_status) {  //  valve A is sent command to open
+    controlValve(0, 1);
+    vlv_packet.bits.vlv_A_status = 1;
+    vlv_packet.bits.vlv_A_on_remaining = vlv_packet_pend.bits.vlv_A_on_remaining;
+    TxDutyCycle_hold = appTxDutyCycle;
+    appTxDutyCycle = CYCLE_TIME_VALVE_ON;
+    txDutyCycleTime = appTxDutyCycle + randr(-APP_TX_DUTYCYCLE_RND, APP_TX_DUTYCYCLE_RND);
+    LoRaWAN.cycle(txDutyCycleTime);
+  }
+  if (vlv_packet_pend.bits.vlv_B_status) {  //  valve B is sent command to open
+    controlValve(1, 1);
+    vlv_packet.bits.vlv_B_status = 1;
+    vlv_packet.bits.vlv_B_on_remaining = vlv_packet_pend.bits.vlv_B_on_remaining;
+    TxDutyCycle_hold = appTxDutyCycle;
+    appTxDutyCycle = CYCLE_TIME_VALVE_ON;
+    txDutyCycleTime = appTxDutyCycle + randr(-APP_TX_DUTYCYCLE_RND, APP_TX_DUTYCYCLE_RND);
+    LoRaWAN.cycle(txDutyCycleTime);
+  }
+}
+void downLinkDataHandle(McpsIndication_t *mcpsIndication) {
   char data[256];
+  uint32_t TxDutyCycle_pend = 0;
   Serial.printf("+REV DATA:%s,RXSIZE %d,PORT %d\r\n", mcpsIndication->RxSlot ? "RXWIN2" : "RXWIN1", mcpsIndication->BufferSize, mcpsIndication->Port);
   Serial.print("+REV DATA:");
-  for (uint8_t i = 0; i < mcpsIndication->BufferSize; i++)
-  {
+  for (uint8_t i = 0; i < mcpsIndication->BufferSize; i++) {
     Serial.printf("%02X", mcpsIndication->Buffer[i]);
   }
   sprintf(data, "%02X", mcpsIndication->Buffer);
-  display.clear();
-  display.drawString(30, 60, "data :");
-  display.drawString(60, 60, data);
-  display.display();
-  Serial.println();
+  rssi = mcpsIndication->Rssi;
+  snr = mcpsIndication->Snr;
+  switch (mcpsIndication->Port) {
+    case 5:  // cycle time set, 2 bytes MSB, LSB of new cycle time in min, convert to ms, update cycle time when valves are off
+      Serial.println("in the case 5 statement");
+      if (mcpsIndication->BufferSize == 1) {
+        TxDutyCycle_pend = (uint32_t)(mcpsIndication->Buffer[0]) * 1000 * 60;
+      } else {
+        TxDutyCycle_pend = ((uint32_t)(((mcpsIndication->Buffer[0]) << 8) | (mcpsIndication->Buffer[1]))) * 1000 * 60;
+      }
+      if (vlv_packet.bits.vlv_A_status | vlv_packet.bits.vlv_B_status ) {
+        TxDutyCycle_hold = TxDutyCycle_pend;
+      }
+  else {
+        appTxDutyCycle = TxDutyCycle_pend;
+      }
+  LoRaWAN.cycle(appTxDutyCycle);
+  display_status();
+  break;
+  case 6:  // valves, 5 bytes of data, last byte turns valves off and resets cycle timer
+    Serial.println("in the case 6 statement");
+    if (mcpsIndication->BufferSize >= 3) {
+      memcpy(vlv_packet_pend.raw, mcpsIndication->Buffer, sizeof(ValveData_t));
+    }
+    set_vlv_status();
+    display_status();
+    break;
+  case 7:  // screen text up to 12 characters for display on screen (like a name)
+    Serial.println("in the case 7 statement");
+
+    uint8_t *buf = mcpsIndication->Buffer;
+    size_t len = mcpsIndication->BufferSize;
+
+    // build a String directly from the raw ASCII bytes:
+    char str[len + 1];
+    memcpy(str, buf, len);
+    str[len] = '\0';
+    // store it as a String in NVS
+    prefs.begin("flash_namespace", false);
+    prefs.putString("screenMsg", str);
+    prefs.end();
+    break;
+    display_status();
+}
+rssi = mcpsIndication->Rssi;
+snr = mcpsIndication->Snr;
+
+Serial.println("downlink processed");
 }
 
-void setup()
-{
+/* set up the ULP to count pulses, and wake on 100 pulses, after each lorawan data send, the last_pulse_count is advanced*/
+
+// static const ulp_insn_t ulp_program[] = {
+//         /* 01 */ M_LABEL(ENTRY_LABEL),
+//         /* 02 */ I_RD_REG(   RTC_GPIO_IN_REG,
+//                            RTC_GPIO_SENSOR_PIN + RTC_GPIO_IN_NEXT_S,
+//                            RTC_GPIO_SENSOR_PIN + RTC_GPIO_IN_NEXT_S),
+//         /* 03 */ //I_ANDI(     R0, 1, R0), redundant
+//         /* 04 */ I_LD(       R1, ulp_prev_state,    0),
+//         /* 05 */ I_SUBR(     R2, R1, R0),
+//         /* 06 */ M_BL(       NO_FALL, 1),
+//         /* 07 */ I_LD(       R3, ulp_count,         0),
+//         /* 08 */ I_ADDR(     R3, R3, R2),
+//         /* 09 */ I_ST(       R3, ulp_count,         0),
+//         /* 10 */ I_ST(       R0, ulp_prev_state,    0),
+//         /* 11 */ M_LABEL(    NO_FALL),
+//         /* 12 */ I_LD(       R1, ulp_last_sent,     0),
+//         /* 13 */ I_SUBR(     R2, R3, R1),
+//         /* 14 */ I_MOVR(     R0, R2),
+//         /* 15 */ M_BL(       NO_WAKE, PULSE_THRESHOLD),
+//         /* 16 */ I_WAKE(),
+//         /* 17 */ I_ST(       R3, ulp_last_sent,     0),
+//         /* 18 */ M_LABEL(    NO_WAKE),
+//         /* 19 */ I_HALT(),
+//         /* 20 */ M_BX(       ENTRY_LABEL),
+// };
+
+
+
+void setup() {
+  hardware_pins_init();  //
+
+  // Begin can take an optional address and Wire interface
+  //if (!mcp.begin(0x68, &Wire)) {
+  //Serial.println("Failed to find MCP3421 chip");
+  //while (1) {
+  //delay(10); // Avoid a busy-wait loop
+  //}
+  //}
+  //Serial.println("MCP3421 Found!");
+  //mcp.setGain(GAIN_1X);
+  //mcp.setResolution(RESOLUTION_16_BIT); // 15 SPS (16-bit)
+
   Serial.begin(115200);
-  Serial.begin(115200);
-  pinMode(18, OUTPUT);
-  digitalWrite(18, HIGH);
-  gxhtc.begin(39, 38);
   display.init();
+  display.clear();
+  delay(200);
+
+    // 1) Check why we woke up
+  esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+  esp_err_t result;
+  switch(cause) {
+    case ESP_SLEEP_WAKEUP_UNDEFINED: { // first boot, configure gpio 17 on schmitt trigger
+      /*memset(RTC_SLOW_MEM, 0, CONFIG_ULP_COPROC_RESERVE_MEM);
+      rtc_gpio_set_direction_in_sleep((gpio_num_t)RTC_GPIO_SENSOR_PIN, RTC_GPIO_MODE_INPUT_ONLY);
+      rtc_gpio_pullup_en((gpio_num_t)RTC_GPIO_SENSOR_PIN);
+
+      size_t size = sizeof(ulp_program) / sizeof(ulp_insn_t);
+      result = ulp_process_macros_and_load(ULP_PROG_START, ulp_program, &size);
+      if (result != ESP_OK){
+        printf("error loading ulp %u", result);*/
+      ulp_run(ULP_PROG_START);
+      break;
+      }
+    case ESP_SLEEP_WAKEUP_ULP: {       // cap hit
+      // read/reset counters, queue LoRa…
+      //ulp_count = 0;
+      break;
+      }
+    case ESP_SLEEP_WAKEUP_TIMER: {    // LoRaWAN timer
+      // send periodic packet…
+      break;
+      }
+    // add other EXTx cases if needed
+    }
+
+
+  /*display.init();
   display.clear();
   display.drawString(0, 0, "init >>> ");
   Serial.print("Connecting to ");
   display.drawString(0, 20, "Connecting to ... ");
-  Serial.println(ssid);
-  display.drawString(100, 20, ssid);
-  delay(5000);
+  display.display();
+  delay(3000);*/
   Mcu.begin(HELTEC_BOARD, SLOW_CLK_TPYE);
 }
 
-void loop()
-{
-  switch (deviceState)
-  {
-  case DEVICE_STATE_INIT:
-  {
-#if (LORAWAN_DEVEUI_AUTO)
-    LoRaWAN.generateDeveuiByChipID();
-#endif
-    LoRaWAN.init(loraWanClass, loraWanRegion);
-    // both set join DR and DR when ADR off
-    LoRaWAN.setDefaultDR(3);
-    break;
-  }
-  case DEVICE_STATE_JOIN:
-  {
-    LoRaWAN.join();
-    break;
-  }
-  case DEVICE_STATE_SEND:
-  {
-    prepareTxFrame(appPort);
-    LoRaWAN.send();
-    deviceState = DEVICE_STATE_CYCLE;
-    break;
-  }
-  case DEVICE_STATE_CYCLE:
-  {
-    // Schedule next packet transmission
-    txDutyCycleTime = appTxDutyCycle + randr(-APP_TX_DUTYCYCLE_RND, APP_TX_DUTYCYCLE_RND);
-    LoRaWAN.cycle(txDutyCycleTime);
-    deviceState = DEVICE_STATE_SLEEP;
-    break;
-  }
-  case DEVICE_STATE_SLEEP:
-  {
-    LoRaWAN.sleep(loraWanClass);
-    break;
-  }
-  default:
-  {
-    deviceState = DEVICE_STATE_INIT;
-    break;
-  }
+void loop() {
+  switch (deviceState) {
+    case DEVICE_STATE_INIT:
+      {
+        LoRaWAN.init(loraWanClass, loraWanRegion);
+        // both set join DR and DR when ADR off
+        LoRaWAN.setDefaultDR(3);
+        break;
+      }
+    case DEVICE_STATE_JOIN:
+      {
+        LoRaWAN.join();
+        break;
+      }
+    case DEVICE_STATE_SEND:
+      {
+        prepareTxFrame(appPort);
+        display_status();
+        LoRaWAN.send();
+        //delay(5000);
+        deviceState = DEVICE_STATE_CYCLE;
+        break;
+      }
+    case DEVICE_STATE_CYCLE:
+      {
+        // Schedule next packet transmission
+        txDutyCycleTime = appTxDutyCycle + randr(-APP_TX_DUTYCYCLE_RND, APP_TX_DUTYCYCLE_RND);
+        LoRaWAN.cycle(txDutyCycleTime);
+        deviceState = DEVICE_STATE_SLEEP;
+        break;
+      }
+    case DEVICE_STATE_SLEEP:
+      {
+        digitalWrite(PIN_VE_CTL, LOW); // no more power to external MCU loads
+        LoRaWAN.sleep(loraWanClass);
+        break;
+      }
+    default:
+      {
+        deviceState = DEVICE_STATE_INIT;
+        break;
+      }
   }
 }
