@@ -18,7 +18,7 @@ extern uint8_t bat_pct;
 void hardware_pins_init(void) {
     // Set input pins
     pinMode(PIN_VE_CTL, OUTPUT);
-    digitalWrite(PIN_VE_CTL, HIGH); // fower to external functions of the MCU
+    digitalWrite(PIN_VE_CTL, HIGH); // power to external functions of the MCU
     pinMode(PIN_REED_P, INPUT_PULLUP);
     pinMode(RS485_DE, OUTPUT);
     pinMode(ADC_CTL_PIN, OUTPUT);

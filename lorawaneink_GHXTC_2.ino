@@ -21,7 +21,7 @@
 #include <Arduino.h>
 #include "LoRaWan_APP.h"
 #include "Wire.h"
-#include "GXHTC.h"
+//#include "GXHTC.h"
 #include "img.h"
 #include "HT_DEPG0290BxS800FxX_BW.h"
 #include "sensor_solenoid.h"
@@ -54,7 +54,7 @@ enum {
 };
 
 DEPG0290BxS800FxX_BW display(5, 4, 3, 6, 2, 1, -1, 6000000);  // rst,dc,cs,busy,sck,mosi,miso,frequency
-GXHTC gxhtc;
+//GXHTC gxhtc;
 Preferences prefs;  // for NVM
 
 char buffer[64];
@@ -168,35 +168,36 @@ static void show_vlv_status(uint8_t vlv) {
 static void display_status() {
   //Serial.print("VLV_STATUS      ");
   //displayPacketBits(vlv_packet);
-  //Serial.print("VLV_STSTUS_PEND ");
+  Serial.print("in display_status fx \n");
   //displayPacketBits(vlv_packet_pend);
+  display.init();
   display.clear();
-  display.display();
+  
   display.drawLine(0, 35, 120, 35);
   display.drawLine(150, 35, 270, 35);
   display.setFont(ArialMT_Plain_24);
   display.setTextAlignment(TEXT_ALIGN_CENTER);
   display.drawString(60, 5, "valve");
-  //show_vlv_status(0);
+  show_vlv_status(0);
   display.drawString(60, 40, buffer);
-  //show_vlv_status(1);
+  show_vlv_status(1);
   display.drawString(60, 65, buffer);
   prefs.begin("flash_namespace", true);                                  // open as read only
   display.drawString(60, 100, prefs.getString("screenMsg", "no name"));  //  default "Fupi"
   prefs.end();
   display.drawString(210, 5, "xxx psi");
   display.setFont(ArialMT_Plain_16);
-  //sprintf(buffer, "battery: %u %%", bat_pct);  // bat_cap8() populates this, and is run in prepareDataFrame
-  //display.drawString(210, 50, buffer);
+  sprintf(buffer, "battery: %u %%", bat_pct);  // bat_cap8() populates this, and is run in prepareDataFrame
+  display.drawString(210, 50, buffer);
   sprintf(buffer, "cycle %lu min", (uint32_t)appTxDutyCycle / 60000);  //  SHOULD BE 60000 milliseconds to mins
   display.drawString(210, 70, buffer);
   sprintf(buffer, "rssi (dBm): %d", rssi);
   display.drawString(210, 90, buffer);
   sprintf(buffer, "SNR: %d", snr);
   display.drawString(210, 110, buffer);
+  Serial.print("about to display.display \n");
   display.display();
-  delay(3000);
-  Wire.end();
+  delay(5000);
 }
 /* Prepares the payload of the frame and decrements valve counter or turns off if time is up*/
 static void prepareTxFrame(uint8_t port) {
@@ -362,7 +363,7 @@ Serial.println("downlink processed");
 
 
 void setup() {
-  hardware_pins_init();  //
+  
 
   // Begin can take an optional address and Wire interface
   //if (!mcp.begin(0x68, &Wire)) {
@@ -376,9 +377,13 @@ void setup() {
   //mcp.setResolution(RESOLUTION_16_BIT); // 15 SPS (16-bit)
 
   Serial.begin(115200);
+  hardware_pins_init();  //
+  Wire.begin(PIN_SDA, PIN_SCL);  // three lines set up the display
   display.init();
   display.clear();
-  delay(200);
+  display.drawString(0, 0, "init >>> alive ");
+  display.display();
+  delay(5000);
 
     // 1) Check why we woke up
   esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
@@ -452,7 +457,7 @@ void loop() {
       }
     case DEVICE_STATE_SLEEP:
       {
-        digitalWrite(PIN_VE_CTL, LOW); // no more power to external MCU loads
+        //digitalWrite(PIN_VE_CTL, LOW); // no more power to external MCU loads
         LoRaWAN.sleep(loraWanClass);
         break;
       }
