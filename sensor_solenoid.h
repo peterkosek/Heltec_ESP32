@@ -20,7 +20,7 @@
 #define ADC_CTL_PIN     46  //
 #define VBAT_READ_PIN   7   // read voltge divider with 100k/490k divider.  
 
-#define PULSE_THRESHOLD  100   // ← change this value to adjust your wake-up count for the reed
+#define PULSE_THRESHOLD  10   // ← change this value to adjust your wake-up count for the reed
 #define GPIO_SENSOR_PIN GPIO_NUM_17  // GPIO pin connected to the sensor for ulp
 #define RTC_GPIO_SENSOR_PIN GPIO_SENSOR_PIN  //  RTCIO_CHANNEL_17 is 17
 

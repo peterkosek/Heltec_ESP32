@@ -295,8 +295,7 @@ void downLinkDataHandle(McpsIndication_t *mcpsIndication) {
       }
       if (vlv_packet.bits.vlv_A_status | vlv_packet.bits.vlv_B_status ) {
         TxDutyCycle_hold = TxDutyCycle_pend;
-      }
-  else {
+      } else {
         appTxDutyCycle = TxDutyCycle_pend;
       }
   LoRaWAN.cycle(appTxDutyCycle);
@@ -326,44 +325,43 @@ void downLinkDataHandle(McpsIndication_t *mcpsIndication) {
     prefs.end();
     break;
     display_status();
-}
-rssi = mcpsIndication->Rssi;
-snr = mcpsIndication->Snr;
+    }  // of switch
+  rssi = mcpsIndication->Rssi;
+  snr = mcpsIndication->Snr;
 
-Serial.println("downlink processed");
-}
+  Serial.println("downlink processed");
+}  // of function
 
 /* set up the ULP to count pulses, and wake on 100 pulses, after each lorawan data send, the last_pulse_count is advanced*/
 
-// static const ulp_insn_t ulp_program[] = {
-//         /* 01 */ M_LABEL(ENTRY_LABEL),
-//         /* 02 */ I_RD_REG(   RTC_GPIO_IN_REG,
-//                            RTC_GPIO_SENSOR_PIN + RTC_GPIO_IN_NEXT_S,
-//                            RTC_GPIO_SENSOR_PIN + RTC_GPIO_IN_NEXT_S),
-//         /* 03 */ //I_ANDI(     R0, 1, R0), redundant
-//         /* 04 */ I_LD(       R1, ulp_prev_state,    0),
-//         /* 05 */ I_SUBR(     R2, R1, R0),
-//         /* 06 */ M_BL(       NO_FALL, 1),
-//         /* 07 */ I_LD(       R3, ulp_count,         0),
-//         /* 08 */ I_ADDR(     R3, R3, R2),
-//         /* 09 */ I_ST(       R3, ulp_count,         0),
-//         /* 10 */ I_ST(       R0, ulp_prev_state,    0),
-//         /* 11 */ M_LABEL(    NO_FALL),
-//         /* 12 */ I_LD(       R1, ulp_last_sent,     0),
-//         /* 13 */ I_SUBR(     R2, R3, R1),
-//         /* 14 */ I_MOVR(     R0, R2),
-//         /* 15 */ M_BL(       NO_WAKE, PULSE_THRESHOLD),
-//         /* 16 */ I_WAKE(),
-//         /* 17 */ I_ST(       R3, ulp_last_sent,     0),
-//         /* 18 */ M_LABEL(    NO_WAKE),
-//         /* 19 */ I_HALT(),
-//         /* 20 */ M_BX(       ENTRY_LABEL),
-// };
+static const ulp_insn_t ulp_program[] = {
+        /* 01 */ M_LABEL(ULP_ENTRY_LABEL),
+        /* 02 */ I_RD_REG(   RTC_GPIO_IN_REG,
+                           RTC_GPIO_SENSOR_PIN + RTC_GPIO_IN_NEXT_S,
+                           RTC_GPIO_SENSOR_PIN + RTC_GPIO_IN_NEXT_S),
+        /* 03 */ //I_ANDI(     R0, 1, R0), redundant
+        /* 04 */ I_LD(       R1, ulp_prev_state,    0),
+        /* 05 */ I_SUBR(     R2, R1, R0),
+        /* 06 */ M_BL(       ULP_NO_FALL, 1),
+        /* 07 */ I_LD(       R3, ulp_count,         0),
+        /* 08 */ I_ADDR(     R3, R3, R2),
+        /* 09 */ I_ST(       R3, ulp_count,         0),
+        /* 10 */ I_ST(       R0, ulp_prev_state,    0),
+        /* 11 */ M_LABEL(    ULP_NO_FALL),
+        /* 12 */ I_LD(       R1, ulp_last_sent,     0),
+        /* 13 */ I_SUBR(     R2, R3, R1),
+        /* 14 */ I_MOVR(     R0, R2),
+        /* 15 */ M_BL(       ULP_NO_WAKE, PULSE_THRESHOLD),
+        /* 16 */ I_WAKE(),
+        /* 17 */ I_ST(       R3, ulp_last_sent,     0),
+        /* 18 */ M_LABEL(    ULP_NO_WAKE),
+        /* 19 */ I_HALT(),
+        /* 20 */ M_BX(       ULP_ENTRY_LABEL),
+};  //  of const deff
 
 
 
 void setup() {
-  
 
   // Begin can take an optional address and Wire interface
   //if (!mcp.begin(0x68, &Wire)) {
@@ -377,6 +375,7 @@ void setup() {
   //mcp.setResolution(RESOLUTION_16_BIT); // 15 SPS (16-bit)
 
   Serial.begin(115200);
+  printf("ULP count: %i", ulp_count);
   hardware_pins_init();  //
   Wire.begin(PIN_SDA, PIN_SCL);  // three lines set up the display
   display.init();
@@ -387,31 +386,47 @@ void setup() {
 
     // 1) Check why we woke up
   esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+  printf("sleep wake up cause %i \n", cause);
   esp_err_t result;
+  size_t size;
   switch(cause) {
     case ESP_SLEEP_WAKEUP_UNDEFINED: { // first boot, configure gpio 17 on schmitt trigger
-      /*memset(RTC_SLOW_MEM, 0, CONFIG_ULP_COPROC_RESERVE_MEM);
+      memset(RTC_SLOW_MEM, 0, CONFIG_ULP_COPROC_RESERVE_MEM);
+
+      rtc_gpio_init(RTC_GPIO_SENSOR_PIN);
+      rtc_gpio_set_direction(RTC_GPIO_SENSOR_PIN, RTC_GPIO_MODE_INPUT_ONLY);
       rtc_gpio_set_direction_in_sleep((gpio_num_t)RTC_GPIO_SENSOR_PIN, RTC_GPIO_MODE_INPUT_ONLY);
       rtc_gpio_pullup_en((gpio_num_t)RTC_GPIO_SENSOR_PIN);
+      rtc_gpio_pulldown_dis((gpio_num_t)RTC_GPIO_SENSOR_PIN);
+      rtc_gpio_hold_en(RTC_GPIO_SENSOR_PIN);
 
-      size_t size = sizeof(ulp_program) / sizeof(ulp_insn_t);
+      size = sizeof(ulp_program) / sizeof(ulp_insn_t);
       result = ulp_process_macros_and_load(ULP_PROG_START, ulp_program, &size);
       if (result != ESP_OK){
-        printf("error loading ulp %u", result);*/
+        printf("error loading ulp %u \n", result);
+      } else {
+        printf("ULP in memory, about to run it \n");  
+      }  // close the else
       ulp_run(ULP_PROG_START);
+      esp_sleep_enable_ulp_wakeup(); 
+      if (result != ESP_OK){
+        printf("error SETTING  SLEEP WAKEUP: %i \n", result);
+      } else {
+        printf(" sleep wakeup set \n");  
+      }  // close the else
       break;
-      }
+      } // of CASE
     case ESP_SLEEP_WAKEUP_ULP: {       // cap hit
       // read/reset counters, queue LoRa…
       //ulp_count = 0;
       break;
-      }
+      }  // OF CASE
     case ESP_SLEEP_WAKEUP_TIMER: {    // LoRaWAN timer
       // send periodic packet…
       break;
-      }
+      }  // OF CASE
     // add other EXTx cases if needed
-    }
+    }  //of switch
 
 
   /*display.init();
@@ -422,7 +437,7 @@ void setup() {
   display.display();
   delay(3000);*/
   Mcu.begin(HELTEC_BOARD, SLOW_CLK_TPYE);
-}
+}; // of function
 
 void loop() {
   switch (deviceState) {
@@ -466,5 +481,5 @@ void loop() {
         deviceState = DEVICE_STATE_INIT;
         break;
       }
-  }
-}
+  } // of switch
+}  // of loop function
