@@ -32,6 +32,7 @@
 #include <Preferences.h>
 #include "soc/rtc_io_reg.h"
 #include <Arduino.h>
+#include "Adafruit_SHT4x.h"
 
 enum {
   // count up each RTC_DATA_ATTR 16-bit word…
@@ -43,7 +44,8 @@ enum {
   ULP_PREV_STATE,      // 5
   ULP_VLV_PACKET_LO,   // 6  (lower 16 bits of ValvePacket_t)
   ULP_VLV_PACKET_HI,   // 7  (upper 16 bits)
-  ULP_PROG_START = 8   // load instructions here
+  ulp_debug_pin_state, // 8
+  ULP_PROG_START = 9   // load instructions here
 };
 
 
@@ -56,6 +58,7 @@ enum {
 DEPG0290BxS800FxX_BW display(5, 4, 3, 6, 2, 1, -1, 6000000);  // rst,dc,cs,busy,sck,mosi,miso,frequency
 //GXHTC gxhtc;
 Preferences prefs;  // for NVM
+Adafruit_SHT4x sht4 = Adafruit_SHT4x();
 
 char buffer[64];
 RTC_DATA_ATTR int16_t rssi = 0;
@@ -65,6 +68,7 @@ RTC_DATA_ATTR ValvePacket_t vlv_packet = { 0 };  //  counts as two uint16_t in t
 RTC_DATA_ATTR uint16_t ulp_last_sent = 0;
 RTC_DATA_ATTR uint16_t ulp_count = 0;
 RTC_DATA_ATTR uint16_t ulp_prev_state = 0;
+RTC_DATA_ATTR uint16_t ulp_debug_pin_state = 0;
 uint16_t reed_count_delta = 0;
 ValvePacket_t vlv_packet_pend;  // used to keep the command and the state independent until resolved
 Preferences pref;
@@ -127,8 +131,8 @@ uint8_t appPort = 2;
 uint8_t confirmedNbTrials = 4;
 
 // Function to display the binary representation of an integer
-void displayBits32(uint32_t v) {
-  for (int i = 31; i >= 0; --i) {
+void displayBits16(uint16_t v) {
+  for (int i = 15; i >= 0; --i) {
     Serial.print((v >> i) & 1);
   }
   Serial.printf("\nvalve A_S %d pending %d\n", (int)vlv_packet.bits.vlv_A_status, (int)vlv_packet_pend.bits.vlv_A_status);
@@ -141,9 +145,9 @@ void displayBits32(uint32_t v) {
 }
 
 void displayPacketBits(const ValvePacket_t &p) {
-  uint32_t v = 0;
+  uint16_t v = 0;
   memcpy(&v, p.raw, sizeof(v));  // pull the raw bytes straight into a uint32_t
-  displayBits32(v);
+  displayBits16(v);
 }
 
 //  display status draws the screen before sleep, after a delay from uploading to receive any download
@@ -173,11 +177,11 @@ static void display_status() {
   display.init();
   display.clear();
   
-  display.drawLine(0, 35, 120, 35);
-  display.drawLine(150, 35, 270, 35);
+  display.drawLine(0, 25, 120, 25);
+  display.drawLine(150, 25, 270, 25);
   display.setFont(ArialMT_Plain_24);
   display.setTextAlignment(TEXT_ALIGN_CENTER);
-  display.drawString(60, 5, "valve");
+  display.drawString(60, 0, "valve");
   show_vlv_status(0);
   display.drawString(60, 40, buffer);
   show_vlv_status(1);
@@ -185,8 +189,10 @@ static void display_status() {
   prefs.begin("flash_namespace", true);                                  // open as read only
   display.drawString(60, 100, prefs.getString("screenMsg", "no name"));  //  default "Fupi"
   prefs.end();
-  display.drawString(210, 5, "xxx psi");
+  display.drawString(210, 0, "xxx psi");
   display.setFont(ArialMT_Plain_16);
+  sprintf(buffer, "reed cycles: %u", ulp_count);  // counter
+  display.drawString(210, 30, buffer);
   sprintf(buffer, "battery: %u %%", bat_pct);  // bat_cap8() populates this, and is run in prepareDataFrame
   display.drawString(210, 50, buffer);
   sprintf(buffer, "cycle %lu min", (uint32_t)appTxDutyCycle / 60000);  //  SHOULD BE 60000 milliseconds to mins
@@ -339,7 +345,8 @@ static const ulp_insn_t ulp_program[] = {
         /* 02 */ I_RD_REG(   RTC_GPIO_IN_REG,
                            RTC_GPIO_SENSOR_PIN + RTC_GPIO_IN_NEXT_S,
                            RTC_GPIO_SENSOR_PIN + RTC_GPIO_IN_NEXT_S),
-        /* 03 */ //I_ANDI(     R0, 1, R0), redundant
+        /* 03 */ I_RSHI(R0, R0, RTC_GPIO_SENSOR_PIN),  //  move the result to bit 0
+                 I_ANDI(R0, R0, 1),                    //  now mask to that single bit
         /* 04 */ I_LD(       R1, ulp_prev_state,    0),
         /* 05 */ I_SUBR(     R2, R1, R0),
         /* 06 */ M_BL(       ULP_NO_FALL, 1),
@@ -378,68 +385,85 @@ void setup() {
   printf("ULP count: %i", ulp_count);
   hardware_pins_init();  //
   Wire.begin(PIN_SDA, PIN_SCL);  // three lines set up the display
+  if (!sht4.begin()) {
+    Serial.println("Couldn't find SHT4x");
+    while (1);
+  }
+  sht4.setPrecision(SHT4X_MED_PRECISION); // or HIGH, MED, LOW
+  sht4.setHeater(SHT4X_NO_HEATER);         // optional: use 
+
   display.init();
   display.clear();
   display.drawString(0, 0, "init >>> alive ");
   display.display();
   delay(5000);
 
-    // 1) Check why we woke up
-  esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
-  printf("sleep wake up cause %i \n", cause);
+    // 1) set up ULP
+  
   esp_err_t result;
-  size_t size;
-  switch(cause) {
-    case ESP_SLEEP_WAKEUP_UNDEFINED: { // first boot, configure gpio 17 on schmitt trigger
-      memset(RTC_SLOW_MEM, 0, CONFIG_ULP_COPROC_RESERVE_MEM);
+  memset(RTC_SLOW_MEM, 0, CONFIG_ULP_COPROC_RESERVE_MEM);
 
-      rtc_gpio_init(RTC_GPIO_SENSOR_PIN);
-      rtc_gpio_set_direction(RTC_GPIO_SENSOR_PIN, RTC_GPIO_MODE_INPUT_ONLY);
-      rtc_gpio_set_direction_in_sleep((gpio_num_t)RTC_GPIO_SENSOR_PIN, RTC_GPIO_MODE_INPUT_ONLY);
-      rtc_gpio_pullup_en((gpio_num_t)RTC_GPIO_SENSOR_PIN);
-      rtc_gpio_pulldown_dis((gpio_num_t)RTC_GPIO_SENSOR_PIN);
-      rtc_gpio_hold_en(RTC_GPIO_SENSOR_PIN);
+  rtc_gpio_init(RTC_GPIO_SENSOR_PIN);
+  rtc_gpio_set_direction(RTC_GPIO_SENSOR_PIN, RTC_GPIO_MODE_INPUT_ONLY);
+  rtc_gpio_set_direction_in_sleep((gpio_num_t)RTC_GPIO_SENSOR_PIN, RTC_GPIO_MODE_INPUT_ONLY);
+  rtc_gpio_pullup_dis((gpio_num_t)RTC_GPIO_SENSOR_PIN);
+  rtc_gpio_pulldown_dis((gpio_num_t)RTC_GPIO_SENSOR_PIN);
+  rtc_gpio_hold_en(RTC_GPIO_SENSOR_PIN);
 
-      size = sizeof(ulp_program) / sizeof(ulp_insn_t);
-      result = ulp_process_macros_and_load(ULP_PROG_START, ulp_program, &size);
-      if (result != ESP_OK){
+  size_t size = sizeof(ulp_program) / sizeof(ulp_insn_t);
+  result = ulp_process_macros_and_load(ULP_PROG_START, ulp_program, &size);
+  if (result != ESP_OK){
         printf("error loading ulp %u \n", result);
       } else {
         printf("ULP in memory, about to run it \n");  
       }  // close the else
-      ulp_run(ULP_PROG_START);
-      esp_sleep_enable_ulp_wakeup(); 
+  ulp_run(ULP_PROG_START);
+  result = esp_sleep_enable_ulp_wakeup(); 
       if (result != ESP_OK){
         printf("error SETTING  SLEEP WAKEUP: %i \n", result);
       } else {
         printf(" sleep wakeup set \n");  
       }  // close the else
-      break;
-      } // of CASE
-    case ESP_SLEEP_WAKEUP_ULP: {       // cap hit
-      // read/reset counters, queue LoRa…
-      //ulp_count = 0;
-      break;
-      }  // OF CASE
-    case ESP_SLEEP_WAKEUP_TIMER: {    // LoRaWAN timer
-      // send periodic packet…
-      break;
-      }  // OF CASE
-    // add other EXTx cases if needed
-    }  //of switch
 
+      // while (1==1){
+      // controlValve(1, 0);
+      // controlValve(0, 0);
+      // delay(1000);
+      // controlValve(1, 1);
+      // controlValve(0, 1);
+      // delay(2000);
+      // }
 
-  /*display.init();
-  display.clear();
-  display.drawString(0, 0, "init >>> ");
-  Serial.print("Connecting to ");
-  display.drawString(0, 20, "Connecting to ... ");
-  display.display();
-  delay(3000);*/
+      while (1==1){
+        uint16_t adc_value;
+        adc_value = readMCP3421avg_cont();
+        printf("ADC value: %i \n", adc_value);
+        delay(1000);
+        
+      sensors_event_t humidity, temp;
+      if (sht4.getEvent(&humidity, &temp)) {
+        Serial.print("Temp: "); Serial.print(temp.temperature); Serial.println(" °C");
+        Serial.print("Humidity: "); Serial.print(humidity.relative_humidity); Serial.println(" %");
+      } else {
+        Serial.println("Read failed");
+      }
+      controlValve(1, 0);
+      controlValve(0, 0);
+      delay(1000);
+      controlValve(1, 1);
+      controlValve(0, 1);
+      delay(2000);
+      digitalWrite(PIN_EN_SENSE_PWR, LOW);
+      delay(2000);
+      digitalWrite(PIN_EN_SENSE_PWR, HIGH);
+      printf("ULP count: %i \n", ulp_count);
+      }
+
   Mcu.begin(HELTEC_BOARD, SLOW_CLK_TPYE);
 }; // of function
 
 void loop() {
+  esp_sleep_wakeup_cause_t wakeup_reason;
   switch (deviceState) {
     case DEVICE_STATE_INIT:
       {
@@ -474,6 +498,8 @@ void loop() {
       {
         //digitalWrite(PIN_VE_CTL, LOW); // no more power to external MCU loads
         LoRaWAN.sleep(loraWanClass);
+        wakeup_reason = esp_sleep_get_wakeup_cause();
+        printf("I just awoke, and my reason for arousal is %i \n", wakeup_reason);
         break;
       }
     default:

@@ -54,7 +54,7 @@ void controlValve(uint8_t valve_number, uint8_t status) {
     digitalWrite(pinF, status ? HIGH : LOW);
     digitalWrite(pinR, status ? LOW  : HIGH);
 
-    delay(250);
+    delay(500);
 
     digitalWrite(pinF, LOW);
     digitalWrite(pinR, LOW);
