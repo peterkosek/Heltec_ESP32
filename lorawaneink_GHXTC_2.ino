@@ -34,26 +34,16 @@
 #include <Arduino.h>
 #include "Adafruit_SHT4x.h"
 
-enum {
-  // count up each RTC_DATA_ATTR 16-bit word…
-  ULP_RSSI,            // 0
-  ULP_SNR,             // 1
-  ULP_BAT_PCT,         // 2
-  ULP_LAST_SENT,       // 3
-  ULP_COUNT,           // 4
-  ULP_PREV_STATE,      // 5
-  ULP_VLV_PACKET_LO,   // 6  (lower 16 bits of ValvePacket_t)
-  ULP_VLV_PACKET_HI,   // 7  (upper 16 bits)
-  ulp_debug_pin_state, // 8
-  ULP_PROG_START = 9   // load instructions here
-};
 
 
-enum {
-  ULP_ENTRY_LABEL   = 0,
-  ULP_NO_WAKE       = 1,
-  ULP_NO_FALL       = 2,
-};
+// 2) A handy macro to get a pointer to any struct at a given word‐index:
+#define RTC_SLOW_BYTE_MEM   ((uint8_t*)SOC_RTC_DATA_LOW)
+#define RTC_SLOW_STRUCT_PTR(type, idx) \
+    ((volatile type*)(RTC_SLOW_BYTE_MEM + (idx) * sizeof(uint32_t)))
+
+// 3) Now you can declare C-pointers into that region:
+volatile ValveState_t* valveA = RTC_SLOW_STRUCT_PTR(ValveState_t, ULP_VALVE_A);
+volatile ValveState_t* valveB = RTC_SLOW_STRUCT_PTR(ValveState_t, ULP_VALVE_B);
 
 DEPG0290BxS800FxX_BW display(5, 4, 3, 6, 2, 1, -1, 6000000);  // rst,dc,cs,busy,sck,mosi,miso,frequency
 //GXHTC gxhtc;
@@ -61,16 +51,17 @@ Preferences prefs;  // for NVM
 Adafruit_SHT4x sht4 = Adafruit_SHT4x();
 
 char buffer[64];
-RTC_DATA_ATTR int16_t rssi = 0;
-RTC_DATA_ATTR int16_t snr = 0;
-RTC_DATA_ATTR int16_t bat_pct = 0;
-RTC_DATA_ATTR ValvePacket_t vlv_packet = { 0 };  //  counts as two uint16_t in the RTC mem block.  
-RTC_DATA_ATTR uint16_t ulp_last_sent = 0;
-RTC_DATA_ATTR uint16_t ulp_count = 0;
-RTC_DATA_ATTR uint16_t ulp_prev_state = 0;
-RTC_DATA_ATTR uint16_t ulp_debug_pin_state = 0;
+// int16_t rssi __attribute__((section(".rtc_slow.data.0")));
+// int16_t snr __attribute__((section(".rtc_slow.data.1")));
+// int16_t bat_pct __attribute__((section(".rtc_slow.data.2")));
+// uint32_t ulp_last_sent __attribute__((section(".rtc_slow.data.3")));
+// uint32_t ulp_count __attribute__((section(".rtc_slow.data.4")));
+// //RTC_DATA_ATTR uint16_t ulp_prev_state = 0;
+// ValveState_t valveA __attribute__((section(".rtc_slow.data.6")));
+// ValveState_t valveB __attribute__((section(".rtc_slow.data.7")));
+// uint32_t ulp_debug_pin_state __attribute__((section(".rtc_slow.data.8")));
 uint16_t reed_count_delta = 0;
-ValvePacket_t vlv_packet_pend;  // used to keep the command and the state independent until resolved
+ValveState_t vlv_packet_pend;  // used to keep the command and the state independent until resolved
 Preferences pref;
 
 
@@ -135,18 +126,15 @@ void displayBits16(uint16_t v) {
   for (int i = 15; i >= 0; --i) {
     Serial.print((v >> i) & 1);
   }
-  Serial.printf("\nvalve A_S %d pending %d\n", (int)vlv_packet.bits.vlv_A_status, (int)vlv_packet_pend.bits.vlv_A_status);
-  Serial.printf("valve b_S %d pending %d\n", (int)vlv_packet.bits.vlv_B_status, (int)vlv_packet_pend.bits.vlv_B_status);
-  Serial.printf("valve A_o %d pending %d\n", (int)vlv_packet.bits.vlv_A_off, (int)vlv_packet_pend.bits.vlv_A_off);
-  Serial.printf("valve b_o %d pending %d\n", (int)vlv_packet.bits.vlv_B_off, (int)vlv_packet_pend.bits.vlv_B_off);
-  Serial.printf("valve A_time %d pending %d\n", (int)vlv_packet.bits.vlv_A_on_remaining, (int)vlv_packet_pend.bits.vlv_A_on_remaining);
-  Serial.printf("valve b_time %d pending %d\n", (int)vlv_packet.bits.vlv_B_on_remaining, (int)vlv_packet_pend.bits.vlv_B_on_remaining);
-  //Serial.printf("vbat read %d \n", bat_cap8());
+  Serial.printf("\nvalve A time %d status %d off %d\n", (int)valveA->time, (int)valveA->onA, (int)valveA->offA);
+  Serial.printf("valve B time %d status %d off %d\n", (int)valveB->time, (int)valveB->onB, (int)valveB->offB);
+  Serial.printf("pending time %d status %d:%d off %d:%d\n", (int)vlv_packet_pend.time, (int)vlv_packet_pend.onA, (int)vlv_packet_pend.onB, (int)vlv_packet_pend.offA, (int)vlv_packet_pend.offB);
+   //Serial.printf("vbat read %d \n", bat_cap8());
 }
 
-void displayPacketBits(const ValvePacket_t &p) {
+void displayPacketBits(const ValveState_t &p) {
   uint16_t v = 0;
-  memcpy(&v, p.raw, sizeof(v));  // pull the raw bytes straight into a uint32_t
+  memcpy(&v, &p, sizeof(v));  // pull the raw bytes straight into a uint16_t
   displayBits16(v);
 }
 
@@ -154,15 +142,15 @@ void displayPacketBits(const ValvePacket_t &p) {
 static void show_vlv_status(uint8_t vlv) {
   switch (vlv) {
     case 0:
-      if (vlv_packet.bits.vlv_A_status) {
-        sprintf(buffer, "A %u min", (vlv_packet.bits.vlv_A_on_remaining * CYCLE_TIME_VALVE_ON / 60000));
+      if (valveA->onA) {
+        sprintf(buffer,"%u min\n", (int16_t)valveA->time * 10);
       } else {
         sprintf(buffer, "A off");
       }
       break;
     case 1:
-      if (vlv_packet.bits.vlv_B_status) {
-        sprintf(buffer, "B %u min", (vlv_packet.bits.vlv_B_on_remaining * CYCLE_TIME_VALVE_ON / 60000));
+      if (valveB->onB) {
+        sprintf(buffer,"%u min\n", (int16_t)valveB->time * 10);
       } else {
         sprintf(buffer, "B off");
       }
@@ -191,15 +179,15 @@ static void display_status() {
   prefs.end();
   display.drawString(210, 0, "xxx psi");
   display.setFont(ArialMT_Plain_16);
-  sprintf(buffer, "reed cycles: %u", ulp_count);  // counter
+  sprintf(buffer, "reed cycles: %lu", RTC_SLOW_MEM[ULP_COUNT]);  // counter
   display.drawString(210, 30, buffer);
-  sprintf(buffer, "battery: %u %%", bat_pct);  // bat_cap8() populates this, and is run in prepareDataFrame
+  sprintf(buffer, "battery: %lu %%", RTC_SLOW_MEM[ULP_BAT_PCT]);  // bat_cap8() populates this, and is run in prepareDataFrame
   display.drawString(210, 50, buffer);
   sprintf(buffer, "cycle %lu min", (uint32_t)appTxDutyCycle / 60000);  //  SHOULD BE 60000 milliseconds to mins
   display.drawString(210, 70, buffer);
-  sprintf(buffer, "rssi (dBm): %d", rssi);
+  sprintf(buffer, "rssi (dBm): %d", (int16_t)(RTC_SLOW_MEM[ULP_RSSI] & 0xffff));
   display.drawString(210, 90, buffer);
-  sprintf(buffer, "SNR: %d", snr);
+  sprintf(buffer, "SNR: %d", (int8_t)(RTC_SLOW_MEM[ULP_SNR] & 0xff));
   display.drawString(210, 110, buffer);
   Serial.print("about to display.display \n");
   display.display();
@@ -214,22 +202,22 @@ static void prepareTxFrame(uint8_t port) {
    *appDataSize max value is LORAWAN_APP_DATA_MAX_SIZE.
    *data is pressure (msb, lsb) in raw adc conversion needs to be calibrated and converted to psi
    */
-  if (vlv_packet.bits.vlv_A_status) {
-    if (vlv_packet.bits.vlv_A_on_remaining) {
-      vlv_packet.bits.vlv_A_on_remaining--;
+  if (valveA->onA) {
+    if (valveA->time) {
+      valveA->time--;
     } else {
       controlValve(0, 0);
-      vlv_packet.bits.vlv_A_status = 0;
-      if (vlv_packet.bits.vlv_B_off || !vlv_packet.bits.vlv_B_status) appTxDutyCycle = TxDutyCycle_hold;
+      valveA->onA = 0;
+      if (valveB->offB || !valveB->onB) appTxDutyCycle = TxDutyCycle_hold;
     }
   }
-  if (vlv_packet.bits.vlv_B_status) {
-    if (vlv_packet.bits.vlv_B_on_remaining) {
-      vlv_packet.bits.vlv_B_on_remaining--;
+  if (valveB->onB) {
+    if (valveB->time) {
+      valveB->time--;
     } else {
       controlValve(1, 0);
-      vlv_packet.bits.vlv_B_status = 0;
-      if (vlv_packet.bits.vlv_A_off || !vlv_packet.bits.vlv_A_status) appTxDutyCycle = TxDutyCycle_hold;
+      valveB->onB = 0;
+      if (valveA->offA || !valveA->onA) appTxDutyCycle = TxDutyCycle_hold;
     }
   }
   //setPowerEnable(1);
@@ -246,34 +234,34 @@ static void prepareTxFrame(uint8_t port) {
  * and turn on the valve, set the timer as cycles based on new TxDutyCycle */
 void set_vlv_status() {
   //  to turn off and reset the TxDutyCycle to prior or valve on
-  if (vlv_packet_pend.bits.vlv_A_off) {
+  if (vlv_packet_pend.offA) {
     controlValve(0, 0);
-    vlv_packet.bits.vlv_A_on_remaining = 0;
-    vlv_packet.bits.vlv_A_status = 0;
-    if (vlv_packet.bits.vlv_B_off || !vlv_packet.bits.vlv_B_status) appTxDutyCycle = TxDutyCycle_hold;
+    valveA->time = 0;
+    valveA->onA = 0;
+    if (valveB->offB || !valveB->onB) appTxDutyCycle = TxDutyCycle_hold;
     LoRaWAN.cycle(appTxDutyCycle);
   }
-  if (vlv_packet_pend.bits.vlv_B_off) {
+  if (vlv_packet_pend.offB) {
     controlValve(1, 0);
-    vlv_packet.bits.vlv_B_on_remaining = 0;
-    vlv_packet.bits.vlv_B_status = 0;
-    if (vlv_packet.bits.vlv_A_off || !vlv_packet.bits.vlv_A_status) appTxDutyCycle = TxDutyCycle_hold;
+    valveB->time = 0;
+    valveB->onB = 0;
+    if (valveA->offA || !valveA->onA) appTxDutyCycle = TxDutyCycle_hold;
     LoRaWAN.cycle(appTxDutyCycle);
   }
 
-  if (vlv_packet_pend.bits.vlv_A_status) {  //  valve A is sent command to open
+  if (vlv_packet_pend.onA) {  //  valve A is sent command to open
     controlValve(0, 1);
-    vlv_packet.bits.vlv_A_status = 1;
-    vlv_packet.bits.vlv_A_on_remaining = vlv_packet_pend.bits.vlv_A_on_remaining;
+    valveA->onA = 1;
+    valveA->time = vlv_packet_pend.time;
     TxDutyCycle_hold = appTxDutyCycle;
     appTxDutyCycle = CYCLE_TIME_VALVE_ON;
     txDutyCycleTime = appTxDutyCycle + randr(-APP_TX_DUTYCYCLE_RND, APP_TX_DUTYCYCLE_RND);
     LoRaWAN.cycle(txDutyCycleTime);
   }
-  if (vlv_packet_pend.bits.vlv_B_status) {  //  valve B is sent command to open
+  if (vlv_packet_pend.onB) {  //  valve B is sent command to open
     controlValve(1, 1);
-    vlv_packet.bits.vlv_B_status = 1;
-    vlv_packet.bits.vlv_B_on_remaining = vlv_packet_pend.bits.vlv_B_on_remaining;
+    valveB->onB = 1;
+    valveB->time = vlv_packet_pend.time;
     TxDutyCycle_hold = appTxDutyCycle;
     appTxDutyCycle = CYCLE_TIME_VALVE_ON;
     txDutyCycleTime = appTxDutyCycle + randr(-APP_TX_DUTYCYCLE_RND, APP_TX_DUTYCYCLE_RND);
@@ -289,8 +277,8 @@ void downLinkDataHandle(McpsIndication_t *mcpsIndication) {
     Serial.printf("%02X", mcpsIndication->Buffer[i]);
   }
   sprintf(data, "%02X", mcpsIndication->Buffer);
-  rssi = mcpsIndication->Rssi;
-  snr = mcpsIndication->Snr;
+  RTC_SLOW_MEM[ULP_RSSI] = mcpsIndication->Rssi;
+  RTC_SLOW_MEM[ULP_SNR] = mcpsIndication->Snr;
   switch (mcpsIndication->Port) {
     case 5:  // cycle time set, 2 bytes MSB, LSB of new cycle time in min, convert to ms, update cycle time when valves are off
       Serial.println("in the case 5 statement");
@@ -299,7 +287,7 @@ void downLinkDataHandle(McpsIndication_t *mcpsIndication) {
       } else {
         TxDutyCycle_pend = ((uint32_t)(((mcpsIndication->Buffer[0]) << 8) | (mcpsIndication->Buffer[1]))) * 1000 * 60;
       }
-      if (vlv_packet.bits.vlv_A_status | vlv_packet.bits.vlv_B_status ) {
+      if (valveA->onA | valveB->onB ) {
         TxDutyCycle_hold = TxDutyCycle_pend;
       } else {
         appTxDutyCycle = TxDutyCycle_pend;
@@ -307,10 +295,10 @@ void downLinkDataHandle(McpsIndication_t *mcpsIndication) {
   LoRaWAN.cycle(appTxDutyCycle);
   display_status();
   break;
-  case 6:  // valves, 5 bytes of data, last byte turns valves off and resets cycle timer
-    Serial.println("in the case 6 statement");
-    if (mcpsIndication->BufferSize >= 3) {
-      memcpy(vlv_packet_pend.raw, mcpsIndication->Buffer, sizeof(ValveData_t));
+  case 6:  // valves, 2 bytes of data
+    Serial.println("in the case 6 statement for valve command pending");
+    if (mcpsIndication->BufferSize == 2) {
+      memcpy(&vlv_packet_pend, mcpsIndication->Buffer, sizeof(ValveState_t));
     }
     set_vlv_status();
     display_status();
@@ -332,99 +320,132 @@ void downLinkDataHandle(McpsIndication_t *mcpsIndication) {
     break;
     display_status();
     }  // of switch
-  rssi = mcpsIndication->Rssi;
-  snr = mcpsIndication->Snr;
+  RTC_SLOW_MEM[ULP_RSSI] = mcpsIndication->Rssi;
+  RTC_SLOW_MEM[ULP_SNR] = mcpsIndication->Snr;
 
   Serial.println("downlink processed");
 }  // of function
 
 /* set up the ULP to count pulses, and wake on 100 pulses, after each lorawan data send, the last_pulse_count is advanced*/
 
+#define PULSE_THRESHOLD 10   // wake every 10 pulses (tune as you like)
+
 static const ulp_insn_t ulp_program[] = {
-        /* 01 */ M_LABEL(ULP_ENTRY_LABEL),
-        /* 02 */ I_RD_REG(   RTC_GPIO_IN_REG,
-                           RTC_GPIO_SENSOR_PIN + RTC_GPIO_IN_NEXT_S,
-                           RTC_GPIO_SENSOR_PIN + RTC_GPIO_IN_NEXT_S),
-        /* 03 */ I_RSHI(R0, R0, RTC_GPIO_SENSOR_PIN),  //  move the result to bit 0
-                 I_ANDI(R0, R0, 1),                    //  now mask to that single bit
-        /* 04 */ I_LD(       R1, ulp_prev_state,    0),
-        /* 05 */ I_SUBR(     R2, R1, R0),
-        /* 06 */ M_BL(       ULP_NO_FALL, 1),
-        /* 07 */ I_LD(       R3, ulp_count,         0),
-        /* 08 */ I_ADDR(     R3, R3, R2),
-        /* 09 */ I_ST(       R3, ulp_count,         0),
-        /* 10 */ I_ST(       R0, ulp_prev_state,    0),
-        /* 11 */ M_LABEL(    ULP_NO_FALL),
-        /* 12 */ I_LD(       R1, ulp_last_sent,     0),
-        /* 13 */ I_SUBR(     R2, R3, R1),
-        /* 14 */ I_MOVR(     R0, R2),
-        /* 15 */ M_BL(       ULP_NO_WAKE, PULSE_THRESHOLD),
-        /* 16 */ I_WAKE(),
-        /* 17 */ I_ST(       R3, ulp_last_sent,     0),
-        /* 18 */ M_LABEL(    ULP_NO_WAKE),
-        /* 19 */ I_HALT(),
-        /* 20 */ M_BX(       ULP_ENTRY_LABEL),
-};  //  of const deff
+  M_LABEL(ULP_ENTRY_LABEL),
+
+    //─── 1) Sample GPIO17 → R0 ─────────────────────────────────────────────
+    I_RD_REG( RTC_GPIO_IN_REG,
+              RTC_GPIO_REG + RTC_GPIO_IN_NEXT_S,
+              RTC_GPIO_REG + RTC_GPIO_IN_NEXT_S ),
+    
+    I_ANDI( R0, R0, 1 ),
+
+    // stash raw bit in R2
+    I_MOVR( R2, R0 ),
+
+    //─── 2) Detect rising edge: delta = R0 – prev_state(R1) ─────────────────
+    I_MOVI( R1, ULP_PREV_STATE ),
+    I_LD(   R1, R1, 0 ),
+    I_SUBR( R0, R0, R1 ),
+
+    // if delta < 1 → no new pulse
+    M_BL(   ULP_NO_EDGE, 1 ),
+
+    //─── 3) Rising edge! bump the counter (in R3) ────────────────────────────
+    I_MOVI( R3, ULP_COUNT ),
+    I_LD(   R3, R3, 0 ),
+    I_ADDI( R3, R3, 1 ),
+    I_MOVI( R1, ULP_COUNT ),
+    I_ST(   R3, R1, 0 ),         // RTC_SLOW_MEM[ULP_COUNT] = R3
+
+    // update prev_state = raw bit
+    I_MOVI( R1, ULP_PREV_STATE ),
+    I_ST(   R2, R1, 0 ),         // RTC_SLOW_MEM[ULP_PREV_STATE] = R2
+
+    //─── 4) Wake logic: diff = count – last_sent ─────────────────────────────
+    I_MOVI( R1, ULP_LAST_SENT ),
+    I_LD(   R1, R1, 0 ),         // R1 = RTC_SLOW_MEM[ULP_LAST_SENT]
+    I_SUBR( R2, R3, R1 ),        // R2 = new_count – last_sent
+
+    // if diff < threshold → skip wake
+    M_BL(   ULP_NO_WAKE, PULSE_THRESHOLD ),
+
+    // else wake the CPU
+    I_WAKE(),
+
+  M_LABEL( ULP_NO_WAKE ),
+    I_HALT(),                    // stop to let ulp_run() return
+
+    // loop back for next manual ping
+    M_BX(    ULP_ENTRY_LABEL ),
+
+  //─── no-edge path ──────────────────────────────────────────────────────────
+  M_LABEL( ULP_NO_EDGE ),
+    // just update prev_state
+    I_MOVI( R1, ULP_PREV_STATE ),
+    I_ST(    R2, R1, 0 ),
+
+    M_BX(    ULP_ENTRY_LABEL ),
+};
 
 
 
 void setup() {
 
-  // Begin can take an optional address and Wire interface
-  //if (!mcp.begin(0x68, &Wire)) {
-  //Serial.println("Failed to find MCP3421 chip");
-  //while (1) {
-  //delay(10); // Avoid a busy-wait loop
-  //}
-  //}
-  //Serial.println("MCP3421 Found!");
-  //mcp.setGain(GAIN_1X);
-  //mcp.setResolution(RESOLUTION_16_BIT); // 15 SPS (16-bit)
 
   Serial.begin(115200);
-  printf("ULP count: %i", ulp_count);
   hardware_pins_init();  //
   Wire.begin(PIN_SDA, PIN_SCL);  // three lines set up the display
-  if (!sht4.begin()) {
-    Serial.println("Couldn't find SHT4x");
-    while (1);
-  }
-  sht4.setPrecision(SHT4X_MED_PRECISION); // or HIGH, MED, LOW
-  sht4.setHeater(SHT4X_NO_HEATER);         // optional: use 
+  // if (!sht4.begin()) {
+  //   Serial.println("Couldn't find SHT4x");
+  //   while (1);
+  // }
+  // sht4.setPrecision(SHT4X_MED_PRECISION); // or HIGH, MED, LOW
+  // sht4.setHeater(SHT4X_NO_HEATER);         // optional: use 
 
   display.init();
   display.clear();
   display.drawString(0, 0, "init >>> alive ");
   display.display();
   delay(5000);
-
+  
     // 1) set up ULP
   
-  esp_err_t result;
   memset(RTC_SLOW_MEM, 0, CONFIG_ULP_COPROC_RESERVE_MEM);
+  bool ok = rtc_gpio_is_valid_gpio(RTC_GPIO_REG);
+  printf("RTC GPIO %d valid: %s\n", RTC_GPIO_REG, ok ? "yes" : "no");
 
-  rtc_gpio_init(RTC_GPIO_SENSOR_PIN);
-  rtc_gpio_set_direction(RTC_GPIO_SENSOR_PIN, RTC_GPIO_MODE_INPUT_ONLY);
-  rtc_gpio_set_direction_in_sleep((gpio_num_t)RTC_GPIO_SENSOR_PIN, RTC_GPIO_MODE_INPUT_ONLY);
-  rtc_gpio_pullup_dis((gpio_num_t)RTC_GPIO_SENSOR_PIN);
-  rtc_gpio_pulldown_dis((gpio_num_t)RTC_GPIO_SENSOR_PIN);
-  rtc_gpio_hold_en(RTC_GPIO_SENSOR_PIN);
+  rtc_gpio_init(RTC_GPIO_REG);
+  rtc_gpio_set_direction(RTC_GPIO_REG, RTC_GPIO_MODE_INPUT_ONLY);
+  rtc_gpio_set_direction_in_sleep((gpio_num_t)RTC_GPIO_REG, RTC_GPIO_MODE_INPUT_ONLY);
+  rtc_gpio_pullup_dis((gpio_num_t)RTC_GPIO_REG);
+  rtc_gpio_pulldown_dis((gpio_num_t)RTC_GPIO_REG);
+  //rtc_gpio_hold_en(RTC_GPIO_REG);
+
+  // fire every 100 ms
+  esp_err_t t = ulp_set_wakeup_period(0, 9000);
+  Serial.printf("ulp_set_wakeup_period returned %s\n", esp_err_to_name(t));
+
+
 
   size_t size = sizeof(ulp_program) / sizeof(ulp_insn_t);
-  result = ulp_process_macros_and_load(ULP_PROG_START, ulp_program, &size);
-  if (result != ESP_OK){
-        printf("error loading ulp %u \n", result);
-      } else {
-        printf("ULP in memory, about to run it \n");  
-      }  // close the else
-  ulp_run(ULP_PROG_START);
-  result = esp_sleep_enable_ulp_wakeup(); 
-      if (result != ESP_OK){
-        printf("error SETTING  SLEEP WAKEUP: %i \n", result);
-      } else {
-        printf(" sleep wakeup set \n");  
-      }  // close the else
+  esp_err_t result = ulp_process_macros_and_load(ULP_PROG_START, ulp_program, &size);
+  // 2) Program the ULP wake-timer: 1 000 000 ticks ≈ 1 s @ 90 kHz
+  Serial.printf("load → %s, %u instructions\n",
+              esp_err_to_name(result),
+              (unsigned)size);
 
+  while(1==1){
+    esp_err_t err = ulp_run(ULP_PROG_START);
+  Serial.printf("ulp_run → %s\n", esp_err_to_name(err));
+    // Dump the first N 32-bit words
+    for(int i = 0; i < 16; i++){
+       Serial.printf(" [%2d]: 0x%08X\n", i, RTC_SLOW_MEM[i]);
+       }
+    Serial.printf("count      %lu \n", RTC_SLOW_MEM[ULP_COUNT]);
+    Serial.printf("prev_state %lu \n", RTC_SLOW_MEM[ULP_PREV_STATE]);
+    delay(2500);
+  }
       // while (1==1){
       // controlValve(1, 0);
       // controlValve(0, 0);
@@ -434,30 +455,30 @@ void setup() {
       // delay(2000);
       // }
 
-      while (1==1){
-        uint16_t adc_value;
-        adc_value = readMCP3421avg_cont();
-        printf("ADC value: %i \n", adc_value);
-        delay(1000);
+      // while (1==1){
+      //   uint16_t adc_value;
+      //   adc_value = readMCP3421avg_cont();
+      //   printf("ADC value: %i \n", adc_value);
+      //   delay(1000);
         
-      sensors_event_t humidity, temp;
-      if (sht4.getEvent(&humidity, &temp)) {
-        Serial.print("Temp: "); Serial.print(temp.temperature); Serial.println(" °C");
-        Serial.print("Humidity: "); Serial.print(humidity.relative_humidity); Serial.println(" %");
-      } else {
-        Serial.println("Read failed");
-      }
-      controlValve(1, 0);
-      controlValve(0, 0);
-      delay(1000);
-      controlValve(1, 1);
-      controlValve(0, 1);
-      delay(2000);
-      digitalWrite(PIN_EN_SENSE_PWR, LOW);
-      delay(2000);
-      digitalWrite(PIN_EN_SENSE_PWR, HIGH);
-      printf("ULP count: %i \n", ulp_count);
-      }
+      // sensors_event_t humidity, temp;
+      // if (sht4.getEvent(&humidity, &temp)) {
+      //   Serial.print("Temp: "); Serial.print(temp.temperature); Serial.println(" °C");
+      //   Serial.print("Humidity: "); Serial.print(humidity.relative_humidity); Serial.println(" %");
+      // } else {
+      //   Serial.println("Read failed");
+      // }
+      // controlValve(1, 0);
+      // controlValve(0, 0);
+      // delay(1000);
+      // controlValve(1, 1);
+      // controlValve(0, 1); 
+      // delay(2000);
+      // digitalWrite(PIN_EN_SENSE_PWR, LOW);
+      // delay(2000);
+      // digitalWrite(PIN_EN_SENSE_PWR, HIGH);
+      // printf("ULP count: %i \n", ulp_count);
+      // }
 
   Mcu.begin(HELTEC_BOARD, SLOW_CLK_TPYE);
 }; // of function

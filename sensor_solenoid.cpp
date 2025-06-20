@@ -1,5 +1,6 @@
 #include "esp32-hal-adc.h"
 #include "sensor_solenoid.h"
+#include "esp32s3/ulp.h"  //  this also includes ulp_common.h 
 
 // Define your pin constants somewhere accessible:
 
@@ -79,7 +80,7 @@ uint8_t bat_cap8(){
   uint16_t pct = uint16_t(diff * 100 / span);
   if (pct > 100) pct = 100;                // clamp
 
-  bat_pct = pct;  //  for RTC we are using only uint16_t vars
+  RTC_SLOW_MEM[ULP_BAT_PCT] = pct;  //  ULP_BAT_PCT is 2 defined in the .h
   return ((uint8_t)pct);
 }
 

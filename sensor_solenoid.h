@@ -21,8 +21,8 @@
 #define VBAT_READ_PIN   7   // read voltge divider with 100k/490k divider.  
 
 #define PULSE_THRESHOLD  10   // ← change this value to adjust your wake-up count for the reed
-#define GPIO_SENSOR_PIN GPIO_NUM_17  // GPIO pin connected to the sensor for ulp
-#define RTC_GPIO_SENSOR_PIN GPIO_SENSOR_PIN  //  RTCIO_CHANNEL_17 is 17
+#define RTC_GPIO_REG GPIO_NUM_17  // GPIO pin connected to the sensor for ulp
+#define RTC_GPIO_INDEX 17  //  RTCIO_CHANNEL_17 is 17
 
 // Optional power rails
 #define VDD_3V3         1
@@ -34,22 +34,60 @@
 
 #define CYCLE_TIME_VALVE_ON   600000    // 10 min in ms, cycle time with valve on
 
+// typedef struct __attribute__((packed)) {
+
+//     unsigned vlv_A_on_remaining  : 8;  // 8 bits, max 1023, 10 min incriments
+//     unsigned vlv_B_on_remaining  : 8;  // 8 bits, max 1023, 10 min incriments
+//     unsigned vlv_A_status        : 1;  // 1 bit
+//     unsigned vlv_B_status        : 1;  // 1 bit
+//     unsigned vlv_A_off           : 1;  //  instruction to shut off vlv A
+//     unsigned vlv_B_off           : 1;  //  instruction to shut off vlv B
+//     unsigned unused_also         : 4;  //  extra bits to fill the 32 bit str
+//     unsigned unused              : 8;  // fill up to 32 bit word, packed as the last byte
+// } ValveData_t;
+
+// typedef union __attribute__((packed)){
+//     ValveData_t bits;
+//     uint8_t    raw[sizeof(ValveData_t)];
+// } ValvePacket_t;
+
 typedef struct __attribute__((packed)) {
+    uint8_t time;       // 10-minute countdown
+    union {
+        struct {
+            uint8_t onA : 1;  // on/off state
+            uint8_t onB : 1;  // on/off state
+            uint8_t onC : 1;  // on/off state
+            uint8_t onD : 1;  // on/off state
+            uint8_t offA    : 1;  // pending shutdown
+            uint8_t offB    : 1;  // pending shutdown
+            uint8_t offC    : 1;  // pending shutdown
+            uint8_t offD    : 1;  // pending shutdown
+        };
+        uint8_t flags;
+    };
+} ValveState_t;
 
-    unsigned vlv_A_on_remaining  : 8;  // 8 bits, max 1023, 10 min incriments
-    unsigned vlv_B_on_remaining  : 8;  // 8 bits, max 1023, 10 min incriments
-    unsigned vlv_A_status        : 1;  // 1 bit
-    unsigned vlv_B_status        : 1;  // 1 bit
-    unsigned vlv_A_off           : 1;  //  instruction to shut off vlv A
-    unsigned vlv_B_off           : 1;  //  instruction to shut off vlv B
-    unsigned unused_also         : 4;  //  extra bits to fill the 32 bit str
-    unsigned unused              : 8;  // fill up to 32 bit word, packed as the last byte
-} ValveData_t;
+enum {
+  // count up each RTC_DATA_ATTR 16-bit word…
+  ULP_RSSI,            // 0
+  ULP_SNR,             // 1
+  ULP_BAT_PCT,         // 2
+  ULP_LAST_SENT,       // 3
+  ULP_COUNT,           // 4
+  ULP_PREV_STATE,      // 5
+  ULP_VALVE_A,   // 6  (lower 16 bits of ValvePacket_t)
+  ULP_VALVE_B,   // 7  (upper 16 bits)
+  ULP_DEBUG_PIN_STATE, // 8
+  ULP_PROG_START = 9   // load instructions here
+};
 
-typedef union __attribute__((packed)){
-    ValveData_t bits;
-    uint8_t    raw[sizeof(ValveData_t)];
-} ValvePacket_t;
+enum {
+  ULP_ENTRY_LABEL   = 0,
+  ULP_NO_WAKE       = 1,
+  ULP_NO_NEW_PULSE  = 2,
+  ULP_NO_EDGE       = 3,
+};
 
 // Shared buffers defined in sensor_solenoid.cpp
 extern uint8_t aTxBuffer0[8];     // first soil moisture sensor message
