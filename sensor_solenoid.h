@@ -20,13 +20,18 @@
 #define ADC_CTL_PIN     46  //
 #define VBAT_READ_PIN   7   // read voltge divider with 100k/490k divider.  
 
-#define PULSE_THRESHOLD  10   // ← change this value to adjust your wake-up count for the reed
-#define RTC_GPIO_REG GPIO_NUM_17  // GPIO pin connected to the sensor for ulp
+#define PULSE_THRESHOLD  10   // default, but MVS stores last uint16_t sent to port 8
+                              // change this value to adjust the default wake-up count for the reed
+#define RTC_GPIO_SENSOR_PIN GPIO_NUM_17  // GPIO pin connected to the sensor for ulp
 #define RTC_GPIO_INDEX 17  //  RTCIO_CHANNEL_17 is 17
 
 // Optional power rails
 #define VDD_3V3         1
 #define GND             0
+
+// For the reed flow meter
+#define TICKS_PER_MIN   209354u      //  based on   I_DELAY(0x13dc), 3500 Hz   //  integer math please
+#define VOLUME_PER_TICK 100u         //  whatever the volume per tick of the meter is displayed as lpm
 
 // ADC (MCP3421) Settings
 #define ADC_ADDR            0x68   // 7-bit address for MCP3421
@@ -76,17 +81,40 @@ enum {
   ULP_LAST_SENT,       // 3
   ULP_COUNT,           // 4
   ULP_PREV_STATE,      // 5
-  ULP_VALVE_A,   // 6  (lower 16 bits of ValvePacket_t)
-  ULP_VALVE_B,   // 7  (upper 16 bits)
+  ULP_VALVE_A,         // 6  (valve a status)
+  ULP_VALVE_B,         // 7  (uvalve b status)
   ULP_DEBUG_PIN_STATE, // 8
-  ULP_PROG_START = 9   // load instructions here
+  ULP_TICK_POP,          // 9   
+  ULP_TS_DELTA_LO,      // 10
+  ULP_TS_DELTA_HI,      // 11
+  ULP_TS_DELTA_TICK_POP,   // 12
+  ULP_TIMER_LO,        // 13 ← low 16 bits of running counter
+  ULP_TIMER_HI,        // 14 ← high 16 bits
+  ULP_REED_DELTA,       // 15 last reed delta
+  ULP_FLOW_RATE,        // 16  calculated flow rate, used for display
+  ULP_VOLUME_DELTA,             // 17  flow since last LoraWAN frame, in liters (reed_delta * vol_per_reed)
+  ULP_WAKE_THRESHOLD,       //  18 
+  ULP_PROG_START = 19,   // load instructions here
 };
 
 enum {
   ULP_ENTRY_LABEL   = 0,
-  ULP_NO_WAKE       = 1,
-  ULP_NO_NEW_PULSE  = 2,
-  ULP_NO_EDGE       = 3,
+  ULP_SKIP_HI_INC   = 1,
+  ULP_SET_OVF   = 2,
+  SKIP_HI_INC    = 3,
+  ULP_STORE_PREV  = 4,
+  ULP_NO_EDGE       = 5,
+  ULP_WRAP_DONE       = 6,
+  ULP_NO_WRAP       = 7,
+  ULP_WRAP_CHECK_LABEL = 8,
+  ULP_NO_WAKE   = 9,
+  ULP_HI_INC_LABEL     = 10,
+  ULP_NO_WRAP_LABEL    = 11,
+  ULP_STORE_CUR = 12,
+  ULP_EXIT_LABEL = 13,
+  ULP_INC_LABEL        = 14,
+  ULP_SET_TICK_POP,
+  ULP_NO_TIMER_WRAP,
 };
 
 // Shared buffers defined in sensor_solenoid.cpp
@@ -96,14 +124,13 @@ extern uint8_t sTempC[4];         // temperature data from soil probes
 extern uint8_t sMoist[4];         // moisture data from soil probes
 extern uint8_t wPres[2];         // raw pressure from adc, needs calibration and conversion
 extern uint8_t aRx[10];           // RS-485 returned data buffer
+extern uint8_t reedCount[2];  // reed pulses counted, MSB, LSB
+extern uint8_t reedcyclesTenMin[2]; // intra reed pulse converted to frequency in activations in 10 min, MSB, LSB
 
 // Function prototypes
 void hardware_pins_init();
 void controlValve(uint8_t valve_number, uint8_t status);
 uint8_t bat_cap8();
-void beginReedCount();      // call once to start counting
-bool isReedCountDone();     // true after 3 s
-uint16_t endReedCount();    // call once done to get count
 
 uint16_t readMCP3421avg_cont();
 
@@ -111,3 +138,4 @@ void setPowerEnable(uint8_t powerState);
 void RS485Sub(uint8_t depth);
 void RS485Get();
 bool readFrame(uint8_t depth, uint8_t header, int& outIdx);
+

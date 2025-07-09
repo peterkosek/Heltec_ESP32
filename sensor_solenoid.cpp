@@ -4,8 +4,6 @@
 
 // Define your pin constants somewhere accessible:
 
-volatile uint16_t   reedCount = 0;
-static uint32_t     reedStart;
 CMCP3421 adc(0.1692);
 
 uint8_t aTxBuffer0[8] = { 0x01, 0x03, 0x00, 0x01, 0x00, 0x02, 0x95, 0xcb }; // first soil moisture sensor message
@@ -14,6 +12,8 @@ uint8_t wPres[2] = {0x01, 0x02}; // raw uncalibrated adc output
 uint8_t sTempC[4], sMoist[4];   //  for final data from soil probes
 uint8_t aRx[10];    //  for rs-485 returned data from soil probes
 extern uint8_t bat_pct;
+
+
 
 // Hardware pin setup
 void hardware_pins_init(void) {
@@ -80,7 +80,7 @@ uint8_t bat_cap8(){
   uint16_t pct = uint16_t(diff * 100 / span);
   if (pct > 100) pct = 100;                // clamp
 
-  RTC_SLOW_MEM[ULP_BAT_PCT] = pct;  //  ULP_BAT_PCT is 2 defined in the .h
+  RTC_SLOW_MEM[ULP_BAT_PCT] = pct;  //  ULP_BAT_PCT is defined in the .h
   return ((uint8_t)pct);
 }
 
@@ -115,28 +115,8 @@ uint16_t readMCP3421avg_cont() {
   Wire.beginTransmission(addr);
   Wire.write(0b10000000);
   Wire.endTransmission();
-
+  
   return (uint16_t)(sum / samples);
-}
-
-static void IRAM_ATTR onReedFall() {
-  reedCount++;
-}
-
-void beginReedCount() {
-  reedCount   = 0;
-  reedStart   = millis();
-  pinMode(PIN_REED_P, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(PIN_REED_P), onReedFall, FALLING);
-}
-
-bool isReedCountDone() {
-  return (millis() - reedStart) >= 3000;
-}
-
-uint16_t endReedCount() {
-  detachInterrupt(digitalPinToInterrupt(PIN_REED_P));
-  return reedCount;
 }
 
 // Assume PIN_EN_SENSE_PWR was pinMode’d to OUTPUT in setup()
