@@ -78,7 +78,7 @@ LoRaMacRegion_t loraWanRegion = ACTIVE_REGION;
 DeviceClass_t loraWanClass = CLASS_A;
 
 /*the application data transmission duty cycle.  value in [ms].*/
-RTC_DATA_ATTR uint32_t appTxDutyCycle = 15000 * 2 * 1;
+RTC_DATA_ATTR uint32_t appTxDutyCycle = 5 * 60 * 1000;
 RTC_DATA_ATTR uint32_t TxDutyCycle_hold;
 
 /*OTAA or ABP*/
@@ -213,6 +213,7 @@ static void display_status() {
   Serial.print("in display_status fx \n");
   //displayPacketBits(vlv_packet_pend);
   display.init();
+  display.screenRotate(ANGLE_180_DEGREE);
   display.clear();
   
   display.drawLine(0, 25, 120, 25);
@@ -403,7 +404,7 @@ void downLinkDataHandle(McpsIndication_t *mcpsIndication) {
     memcpy(str, buf, len);
     str[len] = '\0';
     // store it as a String in NVS
-    prefs.begin("flash_namespace", false);
+    prefs.begin("flash_namespace", true);
     prefs.putString("screenMsg", str);
     prefs.end();
     break;
@@ -526,6 +527,7 @@ WRITE_PERI_REG(RTC_CNTL_TIME_UPDATE_REG, reg);
 
   display.init();
   display.clear();
+  display.screenRotate(ANGLE_180_DEGREE);
   display.drawString(0, 0, "init >>> alive ");
   display.display();
   delay(5000);
