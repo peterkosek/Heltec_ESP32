@@ -115,6 +115,7 @@ enum {
   ULP_INC_LABEL        = 14,
   ULP_SET_TICK_POP,
   ULP_NO_TIMER_WRAP,
+  ULP_DO_WAKE, 
 };
 
 // Shared buffers defined in sensor_solenoid.cpp

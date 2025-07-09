@@ -78,7 +78,7 @@ LoRaMacRegion_t loraWanRegion = ACTIVE_REGION;
 DeviceClass_t loraWanClass = CLASS_A;
 
 /*the application data transmission duty cycle.  value in [ms].*/
-RTC_DATA_ATTR uint32_t appTxDutyCycle = 150000 * 2 * 1;
+RTC_DATA_ATTR uint32_t appTxDutyCycle = 15000 * 2 * 1;
 RTC_DATA_ATTR uint32_t TxDutyCycle_hold;
 
 /*OTAA or ABP*/
@@ -431,114 +431,67 @@ void downLinkDataHandle(McpsIndication_t *mcpsIndication) {
 
 // ULP program: reed-pulse counter with dynamic threshold in RTC_SLOW_MEM
 static const ulp_insn_t ulp_program[] = {
-  //── Entry ────────────────────────────────────────────────────────
   M_LABEL(ULP_ENTRY_LABEL),
-  I_DELAY(0x13dc),                           // ≈500µs @90kHz
+  I_DELAY(45),  // ≈500 µs @90 kHz
 
-  //── 0) Custom ULP_TIMER: low/hi increment and wrap ─────────────
-  I_MOVI(     R1, ULP_TIMER_LO ),      // addr of low timer slot
-  I_LD(       R3, R1, 0 ),             // R3 = timer_lo
-  I_ADDI(     R3, R3, 1 ),             // timer_lo++
-  I_ST(       R3, R1, 0 ),             // store lo back
+  //── 0) ULP_TIMER (low/hi) ────────────────────────────────
+  I_MOVI(R1, ULP_TIMER_LO), I_LD(R3, R1, 0), I_ADDI(R3, R3, 1), I_ST(R3, R1, 0),
+  I_MOVR(R0, R3),
+  M_BG(ULP_NO_TIMER_WRAP, 0),  // skip if low > 0
 
-  I_MOVR(     R0, R3 ),                // R0 = new_lo
-  M_BG(       ULP_NO_TIMER_WRAP, 0 ),  // if new_lo>0 skip hi logic
+    // wrap → bump hi or tick-pop
+    I_MOVI(R1, ULP_TIMER_HI), I_LD(R2, R1, 0),
+    I_MOVI(R0, 0xFFFF), I_SUBR(R0, R0, R2),      // 0xFFFF - hi
+    M_BL(ULP_SET_TICK_POP, 1),                    // if hi == max → pop
+    I_ADDI(R2, R2, 1), I_ST(R2, R1, 0), M_BX(ULP_NO_TIMER_WRAP),
 
-  //── low wrapped → bump hi or overflow ──────────────────────────
-  I_MOVI(     R1, ULP_TIMER_HI ),      // addr of hi
-  I_LD(       R2, R1, 0 ),             // R2 = timer_hi
-  I_MOVI(     R0, 0xFFFF ),            // max
-  I_SUBR(     R0, R0, R2 ),            // 0xFFFF - timer_hi
-  M_BL(       ULP_SET_TICK_POP, 1 ),   // if timer_hi==0xFFFF → overflow
-  I_ADDI(     R2, R2, 1 ),             // hi++
-  I_ST(       R2, R1, 0 ),             // store hi back
-  M_BX(       ULP_NO_TIMER_WRAP ),
+  M_LABEL(ULP_SET_TICK_POP),
+    I_MOVI(R0, 1), I_MOVI(R1, ULP_TICK_POP), I_ST(R0, R1, 0),
+    I_MOVI(R2, 0), I_MOVI(R1, ULP_TIMER_HI), I_ST(R2, R1, 0),
+    M_BX(ULP_NO_TIMER_WRAP),
 
-  M_LABEL(   ULP_SET_TICK_POP ),
-    I_MOVI(   R0, 1 ),                  // set pop flag
-    I_MOVI(   R1, ULP_TICK_POP ),
-    I_ST(     R0, R1, 0 ),
-    I_MOVI(   R2, 0 ),                  // reset hi timer
-    I_MOVI(   R1, ULP_TIMER_HI ),
-    I_ST(     R2, R1, 0 ),
-    M_BX(     ULP_NO_TIMER_WRAP ),
+  M_LABEL(ULP_NO_TIMER_WRAP),
 
-  M_LABEL(   ULP_NO_TIMER_WRAP ),
+  //── 1) Sample GPIO → raw_bit ─────────────────────────────
+  I_RD_REG(RTC_GPIO_IN_REG, RTC_GPIO_INDEX + RTC_GPIO_IN_NEXT_S, RTC_GPIO_INDEX + RTC_GPIO_IN_NEXT_S),
+  I_ANDI(R0, R0, 1), I_MOVR(R2, R0),
 
-  //── 1) Sample GPIO → raw_bit ───────────────────────────────────
-  I_RD_REG(   RTC_GPIO_IN_REG,
-              RTC_GPIO_INDEX + RTC_GPIO_IN_NEXT_S,
-              RTC_GPIO_INDEX + RTC_GPIO_IN_NEXT_S ),
-  I_ANDI(     R0, R0, 1 ),
-  I_MOVR(     R2, R0 ),
+  //── 2) Rising-edge detect (raw_bit - prev_state == 1) ─────
+  I_MOVI(R1, ULP_PREV_STATE), I_LD(R0, R1, 0), I_SUBR(R0, R2, R0),
+    I_ST(R2, R1, 0),
+  M_BL(ULP_NO_EDGE, 1), M_BG(ULP_NO_EDGE, 1),
 
-  //── 2) Rising-edge? ─────────────────────────────────────────────
-  I_MOVI(     R1, ULP_PREV_STATE ),
-  I_LD(       R0, R1, 0 ),             // R0 = prev_state
-  I_SUBR(     R0, R2, R0 ),            // raw_bit - prev_state
-  I_ST(       R2, R1, 0 ),             // prev_state = raw_bit
-  M_BL(       ULP_NO_EDGE, 1 ),        // skip if no new pulse
-  M_BG(       ULP_NO_EDGE, 1 ),        // if delta > 1 → skip
-  // now delta == 1 → true rising edge
 
-  //── 3) Bump the count ───────────────────────────────────────────
-  I_MOVI(     R1, ULP_COUNT ),
-  I_LD(       R3, R1, 0 ),             // R3 = count
-  I_ADDI(     R3, R3, 1 ),             // count++
-  I_ST(       R3, R1, 0 ),             // store count
+  //── 3) Bump count ──────────────────────────────────────────
+  I_MOVI(R1, ULP_COUNT), I_LD(R3, R1, 0), I_ADDI(R3, R3, 1), I_ST(R3, R1, 0),
 
-  //── 4) Snapshot ULP_TIMER into Δ registers ─────────────────────
-  I_MOVI(     R1, ULP_TIMER_LO ),
-  I_LD(       R0, R1, 0 ),             // R0 = timer_lo
-  I_MOVI(     R1, ULP_TS_DELTA_LO ),
-  I_ST(       R0, R1, 0 ),             // delta_lo = timer_lo
+  //── 4) Snapshot ULP_TIMER → Δ lo/hi/pop ───────────────────
+  I_MOVI(R1, ULP_TIMER_LO), I_LD(R0, R1, 0), I_MOVI(R1, ULP_TS_DELTA_LO), I_ST(R0, R1, 0),
+  I_MOVI(R1, ULP_TIMER_HI), I_LD(R0, R1, 0), I_MOVI(R1, ULP_TS_DELTA_HI), I_ST(R0, R1, 0),
+  I_MOVI(R1, ULP_TICK_POP), I_LD(R0, R1, 0), I_MOVI(R1, ULP_TS_DELTA_TICK_POP), I_ST(R0, R1, 0),
+  // clear timer & pop
+  I_MOVI(R0, 0), I_MOVI(R1, ULP_TIMER_LO), I_ST(R0, R1, 0),
+  I_MOVI(R1, ULP_TIMER_HI), I_ST(R0, R1, 0), I_MOVI(R1, ULP_TICK_POP), I_ST(R0, R1, 0),
 
-  I_MOVI(     R1, ULP_TIMER_HI ),
-  I_LD(       R0, R1, 0 ),             // R0 = timer_hi
-  I_MOVI(     R1, ULP_TS_DELTA_HI ),
-  I_ST(       R0, R1, 0 ),             // delta_hi = timer_hi
+  //── 5) Wake logic: diff = count - last_sent - threshold ─────
+  I_MOVI(R1, ULP_COUNT),           I_LD(R0, R1, 0),         // R0 = count
+  I_MOVI(R1, ULP_LAST_SENT),       I_LD(R1, R1, 0),         // R1 = last_sent
+  I_SUBR(R0, R0, R1),                                      // diff = count - last_sent
+  I_MOVI(R1, ULP_WAKE_THRESHOLD),  I_LD(R1, R1, 0),         // R1 = threshold
+  I_SUBR(R0, R1, R0),                                      // R0 = diff - threshold
 
-  //── 4a) Snapshot pop flag into Δ slot ───────────────────────────
-  I_MOVI(     R1, ULP_TICK_POP ),
-  I_LD(       R0, R1, 0 ),             // R0 = tick_pop
-  I_MOVI(     R1, ULP_TS_DELTA_TICK_POP ),
-  I_ST(       R0, R1, 0 ),             // pop_delta = tick_pop
+  I_MOVI(R1, ULP_DEBUG_PIN_STATE), I_ST(R0, R1, 0),       // debug the diff
+  M_BG(ULP_NO_WAKE, 0),            // skip wake if diff < threshold
 
-  // clear ULP_TIMER
-  I_MOVI(     R0, 0 ),
-  I_MOVI(     R1, ULP_TIMER_LO ),
-  I_ST(       R0, R1, 0 ),             // timer_lo = 0
-  I_MOVI(     R1, ULP_TIMER_HI ),
-  I_ST(       R0, R1, 0 ),             // timer_hi = 0
-
-  //── 5) Wake logic: dynamic threshold ─────────────────────────────
-  // diff = count - last_sent
-  I_MOVI(     R1, ULP_COUNT ),
-  I_LD(       R0, R1, 0 ),             // R0 = count
-  I_MOVI(     R1, ULP_LAST_SENT ),
-  I_LD(       R1, R1, 0 ),             // R1 = last_sent
-  I_SUBR(     R0, R0, R1 ),            // diff
-
-  // // load dynamic threshold
-  // I_MOVI(     R1, ULP_WAKE_THRESHOLD ),
-  // I_LD(       R1, R1, 0 ),             // R1 = threshold
-  // I_SUBR(     R0, R0, R1 ),            // diff - threshold
-  // M_BL(       ULP_NO_WAKE, 0 ),        // skip wake if < threshold
-  
-  // branch if diff < PULSE_THRESHOLD (constant)
-  //M_BL(       ULP_NO_WAKE, PULSE_THRESHOLD ),
-
-  // only wake if main CPU is asleep
-  I_RD_REG(   RTC_CNTL_LOW_POWER_ST_REG,
-              RTC_CNTL_MAIN_STATE_IN_IDLE_S,
-              RTC_CNTL_MAIN_STATE_IN_IDLE_S ),
-  M_BG(       ULP_NO_WAKE, 0 ),        // if CPU awake → skip
+  // only wake if main CPU idle
+  I_RD_REG(RTC_CNTL_LOW_POWER_ST_REG, RTC_CNTL_MAIN_STATE_IN_IDLE_S, RTC_CNTL_MAIN_STATE_IN_IDLE_S),
+  M_BL(ULP_NO_WAKE, 0),            // skip if CPU awake
   I_WAKE(),
 
-  M_LABEL(   ULP_NO_WAKE ),
-    M_BX(     ULP_ENTRY_LABEL ),
-  M_LABEL(   ULP_NO_EDGE ),
-    M_BX(     ULP_ENTRY_LABEL ),
+  M_LABEL(ULP_NO_WAKE),
+    M_BX(ULP_ENTRY_LABEL),
+  M_LABEL(ULP_NO_EDGE),
+    M_BX(ULP_ENTRY_LABEL),
 };
 
 
