@@ -1,6 +1,7 @@
 #include "esp32-hal-adc.h"
 #include "sensor_solenoid.h"
 #include "esp32s3/ulp.h"  //  this also includes ulp_common.h 
+#include <HardwareSerial.h>
 
 // Define your pin constants somewhere accessible:
 
@@ -169,4 +170,53 @@ void RS485Get() {
         sMoist[base  ] = aRx[idx+3];
         sMoist[base+1] = aRx[idx+4];
     }
+}
+
+#include <HardwareSerial.h>
+
+#define PIN_RS485_RX 44
+#define PIN_RS485_TX 43
+#define RS485_DE     40  // Driver Enable (HIGH = TX, LOW = RX)
+
+HardwareSerial RS485(0);
+
+void sendModbusRequest() {
+  // Modbus RTU frame: read 2 holding registers starting at 0x0003 (Modbus addr 4)
+  uint8_t request[] = {0x01, 0x03, 0x00, 0x03, 0x00, 0x02, 0x65, 0xCB}; // last 2 bytes are CRC
+
+  // Configure DE pin
+  pinMode(RS485_DE, OUTPUT);
+  digitalWrite(RS485_DE, LOW);  // RX by default
+
+  // Begin serial on UART0 with your pin map
+  RS485.begin(9600, SERIAL_8N1, PIN_RS485_RX, PIN_RS485_TX);
+
+  // Enable transmitter
+  digitalWrite(RS485_DE, HIGH);
+  delay(2); // allow line to settle
+
+  RS485.write(request, sizeof(request));
+  RS485.flush();  // ensure all bytes sent
+  delay(2);       // allow time for transmission
+
+  // Back to receive mode
+  digitalWrite(RS485_DE, LOW);
+
+  // Wait and read response
+  unsigned long timeout = millis() + 1000;
+  Serial.println("🕵️ Waiting for reply...");
+  while (RS485.available() == 0 && millis() < timeout) {
+    delay(1);
+  }
+
+  if (RS485.available()) {
+    Serial.print("📨 Reply: ");
+    while (RS485.available()) {
+      uint8_t b = RS485.read();
+      Serial.printf("%02X ", b);
+    }
+    Serial.println();
+  } else {
+    Serial.println("⛔ No reply received.");
+  }
 }

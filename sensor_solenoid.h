@@ -74,7 +74,7 @@ typedef struct __attribute__((packed)) {
 } ValveState_t;
 
 enum {
-  // count up each RTC_DATA_ATTR 16-bit word…
+  // count up each RTC_DATA_ATTR word…
   ULP_RSSI,            // 0
   ULP_SNR,             // 1
   ULP_BAT_PCT,         // 2
@@ -94,7 +94,10 @@ enum {
   ULP_FLOW_RATE,        // 16  calculated flow rate, used for display
   ULP_VOLUME_DELTA,             // 17  flow since last LoraWAN frame, in liters (reed_delta * vol_per_reed)
   ULP_WAKE_THRESHOLD,       //  18 
-  ULP_PROG_START = 19,   // load instructions here
+  ULP_TXCYCLETIME,        //  19 
+  ULP_TXCYCLEFAST,        //  20
+  ULP_COUNT_PENDING,               //  21
+  ULP_PROG_START = 22,   // load instructions here
 };
 
 enum {
@@ -105,7 +108,7 @@ enum {
   ULP_STORE_PREV  = 4,
   ULP_NO_EDGE       = 5,
   ULP_WRAP_DONE       = 6,
-  ULP_NO_WRAP       = 7,
+  ULP_AFTER_COUNT       = 7,
   ULP_WRAP_CHECK_LABEL = 8,
   ULP_NO_WAKE   = 9,
   ULP_HI_INC_LABEL     = 10,
@@ -115,7 +118,8 @@ enum {
   ULP_INC_LABEL        = 14,
   ULP_SET_TICK_POP,
   ULP_NO_TIMER_WRAP,
-  ULP_DO_WAKE, 
+  ULP_SKIP_MERGE, 
+  ULP_CPU_IS_AWAKE, 
 };
 
 // Shared buffers defined in sensor_solenoid.cpp
@@ -139,4 +143,4 @@ void setPowerEnable(uint8_t powerState);
 void RS485Sub(uint8_t depth);
 void RS485Get();
 bool readFrame(uint8_t depth, uint8_t header, int& outIdx);
-
+void sendModbusRequest();
