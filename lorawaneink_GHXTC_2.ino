@@ -38,6 +38,8 @@
 #include "soc/sens_reg.h"
 #include <Arduino.h>
 #include "Adafruit_SHT4x.h"
+#include <HardwareSerial.h>
+#include "telnet_debug.h"
 
 
 // 2) A handy macro to get a pointer to any struct at a given word‐index:
@@ -57,15 +59,20 @@ Preferences prefs;  // for NVM
 Adafruit_SHT4x sht4 = Adafruit_SHT4x();
 
 char buffer[64];
+uint16_t depthRaw;              //  for the water pressure sensor populated by the function - bool readDepthSensor(uint16_t &depthRaw)
 ValveState_t vlv_packet_pend;  // used to keep the command and the state independent until resolved
 Preferences pref;
+
+const char* ssid = "Peter_Study2";
+const char* password = "Mpjsma0624!";
+
 
 #define REED_NODE       true
 //#define VALVE_NODE      true
 /* OTAA para*/
-uint8_t devEui[] = { 0x70, 0xB3, 0xD5, 0x7E, 0xD0, 0x06, 0x53, 0xf0 };
+uint8_t devEui[] = { 0x70, 0xB3, 0xD5, 0x7E, 0xD0, 0x06, 0x53, 0xf3 };
 uint8_t appEui[] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-uint8_t appKey[] = { 0x74, 0xD6, 0x6E, 0x63, 0x45, 0x82, 0x48, 0x27, 0xFE, 0xC5, 0xB7, 0x70, 0xBA, 0x2B, 0x50, 0x47 };
+uint8_t appKey[] = { 0x74, 0xD6, 0x6E, 0x63, 0x45, 0x82, 0x48, 0x27, 0xFE, 0xC5, 0xB7, 0x70, 0xBA, 0x2B, 0x50, 0x4a };
 
 /* ABP para*/
 uint8_t nwkSKey[] = { 0x15, 0xb1, 0xd0, 0xef, 0xa4, 0x63, 0xdf, 0xbe, 0x3d, 0x11, 0x18, 0x1e, 0x1e, 0xc7, 0xda, 0x85 };
@@ -385,7 +392,7 @@ void downLinkDataHandle(McpsIndication_t *mcpsIndication) {
       if (len == 1) {
         TxDutyCycle_pend = (uint32_t)(mcpsIndication->Buffer[0]) * 1000 * 60;
       } else {
-        TxDutyCycle_pend = ((uint32_t)(((mcpsIndication->Buffer[0]) << 8) | (mcpsIndication->Buffer[1]))) * 1000 * 60;
+        TxDutyCycle_pend = ((uint32_t)mcpsIndication->Buffer[0] << 8 | mcpsIndication->Buffer[1]) * (1000 * 60);
       }
       if (valveA->onA | valveB->onB ) {
         TxDutyCycle_hold = TxDutyCycle_pend;
@@ -534,24 +541,28 @@ M_LABEL(ULP_SKIP_MERGE),
 
 
 void setup() {
+  //  for debug only !!
+  initTelnet(ssid, password);
+  handleTelnet();
+
   Serial.begin(115200);
   hardware_pins_init();  //
   setPowerEnable(1);
-  // Enable the RTC-I2C clock so ULP snapshots actually work
-  SET_PERI_REG_MASK(
-    SENS_SAR_PERI_CLK_GATE_CONF_REG,
-    SENS_RTC_I2C_CLK_EN
-  );
-  // make sure none of the selector bits are set:
-//   clear bits 30, 29, 28 and leave only bit 0 free
-uint32_t reg = READ_PERI_REG(RTC_CNTL_TIME_UPDATE_REG);
-reg &= ~(
-    (1u << RTC_CNTL_TIMER_SYS_RST_S)  |
-    (1u << RTC_CNTL_TIMER_XTL_OFF_S)  |
-    (1u << RTC_CNTL_TIMER_SYS_STALL_S)
-  );
-// now write it back
-WRITE_PERI_REG(RTC_CNTL_TIME_UPDATE_REG, reg);
+//   // Enable the RTC-I2C clock so ULP snapshots actually work
+//   SET_PERI_REG_MASK(
+//     SENS_SAR_PERI_CLK_GATE_CONF_REG,
+//     SENS_RTC_I2C_CLK_EN
+//   );
+//   // make sure none of the selector bits are set:
+// //   clear bits 30, 29, 28 and leave only bit 0 free
+// uint32_t reg = READ_PERI_REG(RTC_CNTL_TIME_UPDATE_REG);
+// reg &= ~(
+//     (1u << RTC_CNTL_TIMER_SYS_RST_S)  |
+//     (1u << RTC_CNTL_TIMER_XTL_OFF_S)  |
+//     (1u << RTC_CNTL_TIMER_SYS_STALL_S)
+//   );
+// // now write it back
+// WRITE_PERI_REG(RTC_CNTL_TIME_UPDATE_REG, reg);
 
   Wire.begin(PIN_SDA, PIN_SCL);  // three lines set up the display
   if (!sht4.begin()) {
@@ -569,13 +580,17 @@ WRITE_PERI_REG(RTC_CNTL_TIME_UPDATE_REG, reg);
   display.display();
   delay(5000);
   
+
+  initRS485(4800);
+
+  Serial.println("init 485");
+    while (1){
+      readDepthSensor(depthRaw);
+      Serial.printf("the depth meter result is %u \n", depthRaw);
+      delay(5000);
+    }
+
     // 1) set up ULP if this is reboot
-
-    // while (1){
-    //   sendModbusRequest();
-    //   delay(3000);
-    // }
-
     // figure out why we’re here
   uint32_t count;
   char screenName[17];

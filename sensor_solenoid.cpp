@@ -5,16 +5,23 @@
 
 // Define your pin constants somewhere accessible:
 
+#define RS485_SERIAL    Serial2
+#define RS485_TX_ENABLE RS485_DE
+
 CMCP3421 adc(0.1692);
 
 uint8_t aTxBuffer0[8] = { 0x01, 0x03, 0x00, 0x01, 0x00, 0x02, 0x95, 0xcb }; // first soil moisture sensor message
 uint8_t aTxBuffer1[8] = { 0x02, 0x03, 0x00, 0x01, 0x00, 0x02, 0x95, 0xf8 }; //  second soil moisture message
+uint8_t aTxBuffer3[8] = { 0x01, 0x03, 0x00, 0x00, 0x00, 0x0a, 0xc5, 0xcd };  //  for three metal proble soil moisture sensor
+uint8_t aTxBuffer4[8] = { 0x01, 0x03, 0x00, 0x00, 0x00, 0x01, 0x84, 0x0a };  //  for three metal proble soil moisture sensor
+// Query to read 2 input registers (pressure), from address 0x0001
+const uint8_t depthQuery[8] = { 0x01, 0x03, 0x00, 0x00, 0x00, 0x0a, 0xc5, 0xcd };
 uint8_t wPres[2] = {0x01, 0x02}; // raw uncalibrated adc output
 uint8_t sTempC[4], sMoist[4];   //  for final data from soil probes
 uint8_t aRx[10];    //  for rs-485 returned data from soil probes
 extern uint8_t bat_pct;
-
-
+extern HardwareSerial Serial1;
+extern uint32_t depthraw;
 
 // Hardware pin setup
 void hardware_pins_init(void) {
@@ -33,7 +40,7 @@ void hardware_pins_init(void) {
     pinMode(PIN_IN3, OUTPUT);
     pinMode(PIN_IN4, OUTPUT);
 
-    // Set EN_PWR as output, and start with this off
+    // Set EN_PWR as output, and start with this on
     pinMode(PIN_EN_SENSE_PWR, OUTPUT);
     digitalWrite(PIN_EN_SENSE_PWR, HIGH);
     // Set up UART pins if needed separately
@@ -172,51 +179,86 @@ void RS485Get() {
     }
 }
 
-#include <HardwareSerial.h>
+void initRS485(uint16_t baud) {
+  RS485_SERIAL.begin(baud, SERIAL_8N1, 44, 43);  // RX=44, TX=43
+  pinMode(RS485_TX_ENABLE, OUTPUT);
+  digitalWrite(RS485_TX_ENABLE, LOW); // Listen by default
+}
 
-#define PIN_RS485_RX 44
-#define PIN_RS485_TX 43
-#define RS485_DE     40  // Driver Enable (HIGH = TX, LOW = RX)
+bool readDepthSensor(uint16_t &depthRaw) {
+  const uint8_t expected_len = 7;
+  const uint8_t max_retries = 7;
 
-HardwareSerial RS485(0);
+  for (uint8_t attempt = 0; attempt < max_retries; ++attempt) {
+    while (RS485_SERIAL.available()) RS485_SERIAL.read();  // Clear buffer
 
-void sendModbusRequest() {
-  // Modbus RTU frame: read 2 holding registers starting at 0x0003 (Modbus addr 4)
-  uint8_t request[] = {0x01, 0x03, 0x00, 0x03, 0x00, 0x02, 0x65, 0xCB}; // last 2 bytes are CRC
+    digitalWrite(RS485_TX_ENABLE, HIGH);
+    delay(10); // Settling time
+    RS485_SERIAL.write(aTxBuffer4, sizeof(aTxBuffer3));
+    RS485_SERIAL.flush(true);
+    delayMicroseconds(200);
+    digitalWrite(RS485_TX_ENABLE, LOW);
 
-  // Configure DE pin
-  pinMode(RS485_DE, OUTPUT);
-  digitalWrite(RS485_DE, LOW);  // RX by default
-
-  // Begin serial on UART0 with your pin map
-  RS485.begin(9600, SERIAL_8N1, PIN_RS485_RX, PIN_RS485_TX);
-
-  // Enable transmitter
-  digitalWrite(RS485_DE, HIGH);
-  delay(2); // allow line to settle
-
-  RS485.write(request, sizeof(request));
-  RS485.flush();  // ensure all bytes sent
-  delay(2);       // allow time for transmission
-
-  // Back to receive mode
-  digitalWrite(RS485_DE, LOW);
-
-  // Wait and read response
-  unsigned long timeout = millis() + 1000;
-  Serial.println("🕵️ Waiting for reply...");
-  while (RS485.available() == 0 && millis() < timeout) {
-    delay(1);
-  }
-
-  if (RS485.available()) {
-    Serial.print("📨 Reply: ");
-    while (RS485.available()) {
-      uint8_t b = RS485.read();
-      Serial.printf("%02X ", b);
+    uint32_t start = millis();
+    while (RS485_SERIAL.available() < expected_len && millis() - start < 200) {
+      delay(1);
     }
-    Serial.println();
-  } else {
-    Serial.println("⛔ No reply received.");
+
+    if (RS485_SERIAL.available() >= expected_len) {
+      uint8_t response[expected_len];
+      for (int i = 0; i < expected_len; i++) {
+        response[i] = RS485_SERIAL.read();
+      }
+
+      uint16_t crc = modbusCRC(response, expected_len - 2);
+      uint16_t received_crc = response[5] | (response[6] << 8);
+
+      if (crc == received_crc && response[0] == 0x01 && response[1] == 0x03) {
+        depthRaw = ((uint16_t)response[3] << 8) | response[4];
+        return true;
+      } else {
+        Serial.printf("Bad CRC or header on attempt %u\n", attempt + 1);
+      }
+    } else {
+      Serial.printf("Timeout on attempt %u\n", attempt + 1);
+    }
+
+    delay(50);  // Short retry delay
   }
+
+  Serial.println("Failed to read valid response after retries");
+  return false;
+}
+
+
+bool buildModbusRequest(uint8_t slaveAddr, uint16_t regStart, uint16_t regCount, uint8_t (&request)[8]) {
+  request[0] = slaveAddr;
+  request[1] = 0x03;  // Function code: Read Holding Registers
+  request[2] = (regStart >> 8) & 0xFF;
+  request[3] = regStart & 0xFF;
+  request[4] = (regCount >> 8) & 0xFF;
+  request[5] = regCount & 0xFF;
+
+  uint16_t crc = modbusCRC(request, 6);
+  request[6] = crc & 0xFF;         // CRC Lo
+  request[7] = (crc >> 8) & 0xFF;  // CRC Hi
+
+  return true;  // for chaining or logging if desired
+}
+
+uint16_t modbusCRC(const uint8_t* data, size_t length) {
+  uint16_t crc = 0xFFFF;
+
+  for (size_t i = 0; i < length; i++) {
+    crc ^= data[i];
+
+    for (uint8_t j = 0; j < 8; j++) {
+      if (crc & 0x0001)
+        crc = (crc >> 1) ^ 0xA001;
+      else
+        crc >>= 1;
+    }
+  }
+
+  return crc;  // LSB-first when sending over Modbus
 }

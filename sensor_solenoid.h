@@ -141,6 +141,10 @@ uint16_t readMCP3421avg_cont();
 
 void setPowerEnable(uint8_t powerState);
 void RS485Sub(uint8_t depth);
+void initRS485(uint16_t baud);
+bool readDepthSensor(uint16_t &depthRaw);
 void RS485Get();
 bool readFrame(uint8_t depth, uint8_t header, int& outIdx);
 void sendModbusRequest();
+uint16_t modbusCRC(const uint8_t* data, size_t length);
+bool buildModbusRequest(uint8_t slaveAddr, uint16_t regStart, uint16_t regCount, uint8_t (&request)[8]);
