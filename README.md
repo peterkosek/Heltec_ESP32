@@ -29,8 +29,8 @@ To deploy:
 1100 mAmp battery
 6v 120 mAmp solar panel.
 Heltec-e290 with antenna (I used the standard SMC cable to the micro adapter to penetrate the project box).
-project box with see though lid to see the eink display.
-grommet to penetrate the box with the sensor cable.
-web serever running chirpstack 4 in docker as well as flask, mySQL.
+Project box with see though lid to see the eink display.
+Grommet to penetrate the box with the sensor cable.
+Web serever running chirpstack 4 in docker as well as flask, mySQL.
 
-I have used the v4 of chirpstack as the docker image on EC2, and added mySQL to manage the data.  The data is then served using python.  I will upload that once modifications are complete.  
+I have used the v4 of chirpstack as the docker image on EC2, and added flask and mySQL to manage the data.  The data is then served using flask.  I will upload that once modifications are complete.  
