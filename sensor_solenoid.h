@@ -5,19 +5,20 @@
 #include <MCP3421.h>
 
 // GPIO Pin Assignments
-#define PIN_SDA         39   // P4.2
-#define PIN_SCL         38   // P4.3
-#define PIN_RS485_RX    44  // P4.6 (U0RXD)
-#define PIN_RS485_TX    43  // P4.8 (U0TXD)
+#define PIN_SDA         39   // 
+#define PIN_SCL         38   // 
+#define PIN_RS485_RX    44  //  (U0RXD)
+#define PIN_RS485_TX    43  //  (U0TXD)
 #define RS485_DE        40  //  
-#define PIN_IN1         48  // P4.25
-#define PIN_IN2         47  // P4.26
-#define PIN_IN3         41  // P4.28
-#define PIN_IN4         42  // P4.27
-#define PIN_VE_CTL      18  //  enable power for second LDR for external loads on the MCU board
-#define PIN_EN_SENSE_PWR      45 // P4.34   for power on the sensor board, also LED on the vision master board
-#define PIN_REED_P      17  // P4.38
-#define ADC_CTL_PIN     46  //
+#define PIN_IN1         48  // 
+#define PIN_IN2         47  // 
+#define PIN_IN3         41  // 
+#define PIN_IN4         42  // 
+#define PIN_VE_CTL      18  //  enables Ve, for eInk
+#define PIN_EN_SENSE_PWR      45 //    for power on the sensor board, 
+                          //  also LED on the vision master board
+#define PIN_REED_P      17  // 
+#define ADC_CTL_PIN     46  // to read bat voltage
 #define VBAT_READ_PIN   7   // read voltge divider with 100k/490k divider.  
 
 #define PULSE_THRESHOLD  10   // default, but MVS stores last uint16_t sent to port 8
@@ -79,25 +80,26 @@ enum {
   ULP_SNR,             // 1
   ULP_BAT_PCT,         // 2
   ULP_LAST_SENT,       // 3
-  ULP_COUNT,           // 4
-  ULP_PREV_STATE,      // 5
-  ULP_VALVE_A,         // 6  (valve a status)
-  ULP_VALVE_B,         // 7  (uvalve b status)
-  ULP_DEBUG_PIN_STATE, // 8
-  ULP_TICK_POP,          // 9   
-  ULP_TS_DELTA_LO,      // 10
-  ULP_TS_DELTA_HI,      // 11
-  ULP_TS_DELTA_TICK_POP,   // 12
-  ULP_TIMER_LO,        // 13 ← low 16 bits of running counter
-  ULP_TIMER_HI,        // 14 ← high 16 bits
-  ULP_REED_DELTA,       // 15 last reed delta
-  ULP_FLOW_RATE,        // 16  calculated flow rate, used for display
-  ULP_VOLUME_DELTA,             // 17  flow since last LoraWAN frame, in liters (reed_delta * vol_per_reed)
-  ULP_WAKE_THRESHOLD,       //  18 
-  ULP_TXCYCLETIME,        //  19 
-  ULP_TXCYCLEFAST,        //  20
-  ULP_COUNT_PENDING,               //  21
-  ULP_PROG_START = 22,   // load instructions here
+  ULP_COUNT_LO,           // 4
+  ULP_COUNT_HI,
+  ULP_PREV_STATE,      // 6
+  ULP_VALVE_A,         // 7  (valve a status)
+  ULP_VALVE_B,         // 8  (uvalve b status)
+  ULP_DEBUG_PIN_STATE, // 9
+  ULP_TICK_POP,          // 10   
+  ULP_TS_DELTA_LO,      // 11
+  ULP_TS_DELTA_HI,      // 12
+  ULP_TS_DELTA_TICK_POP,   // 13
+  ULP_TIMER_LO,        // 14 ← low 16 bits of running counter
+  ULP_TIMER_HI,        // 15 ← high 16 bits
+  ULP_REED_DELTA,       // 16 last reed delta
+  ULP_FLOW_RATE,        // 17  calculated flow rate, used for display
+  ULP_VOLUME_DELTA,             // 18  flow since last LoraWAN frame, in liters (reed_delta * vol_per_reed)
+  ULP_WAKE_THRESHOLD,       //  19 
+  ULP_TXCYCLETIME,        //  20 
+  ULP_TXCYCLEFAST,        //  21
+  ULP_COUNT_PENDING,               //  22
+  ULP_PROG_START = 23,   // load instructions here
 };
 
 enum {
@@ -120,6 +122,10 @@ enum {
   ULP_NO_TIMER_WRAP,
   ULP_SKIP_MERGE, 
   ULP_CPU_IS_AWAKE, 
+  ULP_BUMP_HI,
+  RESET_PENDING_NO_WRAP,
+  RESET_PENDING_WRAP,
+
 };
 
 // Shared buffers defined in sensor_solenoid.cpp
@@ -131,6 +137,7 @@ extern uint8_t wPres[2];         // raw pressure from adc, needs calibration and
 extern uint8_t aRx[10];           // RS-485 returned data buffer
 extern uint8_t reedCount[2];  // reed pulses counted, MSB, LSB
 extern uint8_t reedcyclesTenMin[2]; // intra reed pulse converted to frequency in activations in 10 min, MSB, LSB
+extern uint8_t soilSensorOut[6];  //  for the two soil sensors including moisture, temp and pH
 
 // Function prototypes
 void hardware_pins_init();
@@ -148,3 +155,4 @@ bool readFrame(uint8_t depth, uint8_t header, int& outIdx);
 void sendModbusRequest();
 uint16_t modbusCRC(const uint8_t* data, size_t length);
 bool buildModbusRequest(uint8_t slaveAddr, uint16_t regStart, uint16_t regCount, uint8_t (&request)[8]);
+bool readSoilSensor(uint8_t sensNumber);

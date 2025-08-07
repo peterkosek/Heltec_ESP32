@@ -14,11 +14,14 @@ uint8_t aTxBuffer0[8] = { 0x01, 0x03, 0x00, 0x01, 0x00, 0x02, 0x95, 0xcb }; // f
 uint8_t aTxBuffer1[8] = { 0x02, 0x03, 0x00, 0x01, 0x00, 0x02, 0x95, 0xf8 }; //  second soil moisture message
 uint8_t aTxBuffer3[8] = { 0x01, 0x03, 0x00, 0x00, 0x00, 0x0a, 0xc5, 0xcd };  //  for three metal proble soil moisture sensor
 uint8_t aTxBuffer4[8] = { 0x01, 0x03, 0x00, 0x00, 0x00, 0x01, 0x84, 0x0a };  //  for three metal proble soil moisture sensor
+uint8_t aSoilSensShallow[] = { 0x01, 0x03, 0x00, 0x00, 0x00, 0x04, 0x44, 0x09 };
+uint8_t aSoilSensDeep[]    = { 0x02, 0x03, 0x00, 0x00, 0x00, 0x04, 0x44, 0x3a };
 // Query to read 2 input registers (pressure), from address 0x0001
 const uint8_t depthQuery[8] = { 0x01, 0x03, 0x00, 0x00, 0x00, 0x0a, 0xc5, 0xcd };
 uint8_t wPres[2] = {0x01, 0x02}; // raw uncalibrated adc output
 uint8_t sTempC[4], sMoist[4];   //  for final data from soil probes
 uint8_t aRx[10];    //  for rs-485 returned data from soil probes
+uint8_t soilSensorOut[6];  //  for the two soil sensors including moisture, temp and pH
 extern uint8_t bat_pct;
 extern HardwareSerial Serial1;
 extern uint32_t depthraw;
@@ -230,6 +233,55 @@ bool readDepthSensor(uint16_t &depthRaw) {
   return false;
 }
 
+bool readSoilSensor(uint8_t sensNumber) {
+  const uint8_t expected_len = 13;
+  const uint8_t max_retries = 7;
+  
+  for (uint8_t depth = 0; depth < sensNumber; ++depth) {
+  for (uint8_t attempt = 0; attempt < max_retries; ++attempt) {
+    while (RS485_SERIAL.available()) RS485_SERIAL.read();  // Clear buffer
+
+    digitalWrite(RS485_TX_ENABLE, HIGH);
+    delay(10); // Settling time
+    RS485_SERIAL.write((depth == 0) ? aSoilSensShallow : aSoilSensDeep, sizeof(aSoilSensShallow));
+    ESP_LOGI("aSoilSensorShallow(len) %u; ", sizeof(aSoilSensShallow));
+    RS485_SERIAL.flush(true);
+    delayMicroseconds(200);
+    digitalWrite(RS485_TX_ENABLE, LOW);
+
+    uint32_t start = millis();
+    while (RS485_SERIAL.available() < expected_len && millis() - start < 200) {
+      delay(1);
+    }
+
+    if (RS485_SERIAL.available() >= expected_len) {
+      uint8_t response[expected_len];
+      for (int i = 0; i < expected_len; i++) {
+        response[i] = RS485_SERIAL.read();
+      }
+
+      uint16_t crc = modbusCRC(response, expected_len - 2);
+      uint16_t received_crc = response[11] | (response[12] << 8);
+
+      if (crc == received_crc && response[0] == 0x01 && response[1] == 0x03) {
+        soilSensorOut[depth*1 + 0] = (uint8_t)(((response[3] << 8) | response[4]) / 10);  // moist as a byte
+		    soilSensorOut[depth*1 + 1] = (uint8_t)(((response[5] << 8) | response[6]) / 10);  // temp as a byte, bytes 7 and 8 are for EC, not on these sensors
+		    soilSensorOut[depth*1 + 2] = (uint8_t)(((response[9] << 8) | response[10]) / 10);  // pH as a byte
+        return true;
+      } else {
+        Serial.printf("Bad CRC or header on attempt %u\n", attempt + 1);
+      }
+    } else {
+      Serial.printf("Timeout on attempt %u\n", attempt + 1);
+    }
+
+    delay(50);  // Short retry delay
+  }  //  attempt loop
+  }  //  depth loop
+  
+  Serial.println("Failed to read valid RS-485 response after retries");
+  return false;
+}  // of function
 
 bool buildModbusRequest(uint8_t slaveAddr, uint16_t regStart, uint16_t regCount, uint8_t (&request)[8]) {
   request[0] = slaveAddr;
