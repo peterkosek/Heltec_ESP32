@@ -33,4 +33,53 @@ Project box with see though lid to see the eink display.
 Grommet to penetrate the box with the sensor cable.
 Web serever running chirpstack 4 in docker as well as flask, mySQL.
 
+RS-485 soil sensors:
+1.  temp/moisture:  two sensors per node, RS-485 addresses 0x01 (shallow), 0x02(deep).
+| Parameter | Value   | Units   |
+|-----------|---------|---------|
+| red       | 5v     | isolated    |
+| black     | gnd    | isolated  |
+| white     | A      | shallow sensor |
+| yellow    | B      | shallow sensor |
+| green     | A      | deep sensor |
+| orange    | B      | deep sensor |
+|-----------|---------|---------|
+
+appPort
+
+REED_NODE    8
+#ifdef REED_NODE
+  appData[appDataSize++] = (uint8_t)((RTC_SLOW_MEMORY[ULP_REED_DELTA] >> 8));       //  msb
+  appData[appDataSize++] = (uint8_t)((RTC_SLOW_MEMORY[ULP_REED_DELTA] & 0xff));    //  lsb
+  appData[appDataSize++] = (uint8_t)((RTC_SLOW_MEMORY[ULP_FLOW_RATE] >> 8));       //  msb
+  appData[appDataSize++] = (uint8_t)((RTC_SLOW_MEMORY[ULP_FLOW_RATE] & 0xff));    //  lsb
+  appData[appDataSize++] = (uint8_t)((RTC_SLOW_MEMORY[ULP_COUNT_LO] >> 8));       //  msb
+  appData[appDataSize++] = (uint8_t)((RTC_SLOW_MEMORY[ULP_COUNT_LO] & 0xff));    //  lsb
+  appData[appDataSize++] = (uint8_t)((RTC_SLOW_MEMORY[ULP_BAT_PCT] & 0xff));  //  
+  #endif
+  
+VALVE_NODE    9
+#ifdef VALVE_NODE
+  appData[appDataSize++] = wPress[0];       //  msb
+  appData[appDataSize++] = xPress[1];    //  lsb
+  appData[appDataSize++] = (uint8_t)(valveA -> time);       //  valve A
+  appData[appDataSize++] = (uint8_t)(valveB -> time);       //  valve B 
+  appData[appDataSize++] = (uint8_t)((RTC_SLOW_MEMORY[ULP_BAT_PCT] & 0xff));  //
+  #endif
+
+SOIL_SENSOR_NODE    10
+#ifdef SOIL_SENSOR_NODE
+  appData[appDataSize++] = (uint8_t)(soilSensorOut[0]);       //  moist shallow
+  appData[appDataSize++] = (uint8_t)(soilSensorOut[1]);       //  temp C shallow
+  appData[appDataSize++] = (uint8_t)(soilSensorOut[2]);    //  pH shallow
+  appData[appDataSize++] = (uint8_t)(soilSensorOut[3]);       //  moist deep
+  appData[appDataSize++] = (uint8_t)(soilSensorOut[4]);       //  temp C deep
+  appData[appDataSize++] = (uint8_t)(soilSensorOut[5]);    //  pH deep
+  appData[appDataSize++] = (uint8_t)((RTC_SLOW_MEMORY[ULP_BAT_PCT] & 0xff));  //  battery pct
+  #endif
+
+
+
+
+
 I have used the v4 of chirpstack as the docker image on EC2, and added flask and mySQL to manage the data.  The data is then served using flask.  I will upload that once modifications are complete.  
