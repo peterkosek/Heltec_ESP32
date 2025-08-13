@@ -26,6 +26,8 @@ The RS-485 termination resistor can be bypassed by shorting the center pad of th
 RS-485 bias resistors (1kOhm) can be included by shorting the lateral pads of the RS-485 region.  
 
 To deploy:
+
+
 1100 mAmp battery
 6v 120 mAmp solar panel.
 Heltec-e290 with antenna (I used the standard SMC cable to the micro adapter to penetrate the project box).
@@ -78,8 +80,22 @@ SOIL_SENSOR_NODE    10
   appData[appDataSize++] = (uint8_t)((RTC_SLOW_MEMORY[ULP_BAT_PCT] & 0xff));  //  battery pct
   #endif
 
+appPort map (udata from node), and target table in MySQL (active_devices is the device table)
+1:  (2) lora_e5 soil probes, no pH   :  soil_air_data
+2:  valve node and pressure  :  valve_data
+3:  lake level  :  lake_data
+4:
+5:  lora_e5 (2) soil one air  :  soil_air_data
+6:
+7: 
+8:  reed node  :  water_meter_data
+9:  valve node and pressure  :  valve_data
+10:  seeed weather station  :  s1000_data
+11:  two rs-485 soil probes include pH  :  soil_air_data
 
-
-
+appPort map (download to node)
+5:  uint16_t loraWAN device cycle time in min
+6:  uint32_t valve data -- to program valves 
+7:  char(12) set device name
 
 I have used the v4 of chirpstack as the docker image on EC2, and added flask and mySQL to manage the data.  The data is then served using flask.  I will upload that once modifications are complete.  
