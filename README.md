@@ -81,6 +81,7 @@ SOIL_SENSOR_NODE    10
   #endif
 
 appPort map (udata from node), and target table in MySQL (active_devices is the device table)
+
 1:  (2) lora_e5 soil probes, no pH   :  soil_air_data
             dOut.update({'soilTempCS': int.from_bytes(byteDataIn[0:2], 'big') / 10})
             dOut.update({'soilMoistS': int.from_bytes(byteDataIn[2:4], 'big') / 10})
