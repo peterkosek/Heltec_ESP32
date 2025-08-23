@@ -10,10 +10,10 @@
 #define PIN_RS485_RX    44  //  (U0RXD)
 #define PIN_RS485_TX    43  //  (U0TXD)
 #define RS485_DE        40  //  
-#define PIN_IN1         48  // 
-#define PIN_IN2         47  // 
-#define PIN_IN3         41  // 
-#define PIN_IN4         42  // 
+#define PIN_IN1         47  // 
+#define PIN_IN2         48  // 
+#define PIN_IN3         42  // 
+#define PIN_IN4         41  // 
 #define PIN_VE_CTL      18  //  enables Ve, for eInk
 #define PIN_EN_SENSE_PWR      45 //    for power on the sensor board, 
                           //  also LED on the vision master board
@@ -32,7 +32,7 @@
 
 // For the reed flow meter
 #define TICKS_PER_MIN   209354u      //  based on   I_DELAY(0x13dc), 3500 Hz   //  integer math please
-#define VOLUME_PER_TICK 100u         //  whatever the volume per tick of the meter is displayed as lpm
+#define VOLUME_PER_TICK 100u         //  whatever the volume per tick of the meter is displayed as gpm
 
 // ADC (MCP3421) Settings
 #define ADC_ADDR            0x68   // 7-bit address for MCP3421
@@ -80,8 +80,8 @@ enum {
   ULP_SNR,             // 1
   ULP_BAT_PCT,         // 2
   ULP_LAST_SENT,       // 3
-  ULP_COUNT_LO,           // 4
-  ULP_COUNT_HI,
+  ULP_COUNT_LO,        // 4
+  ULP_COUNT_HI,        // 5
   ULP_PREV_STATE,      // 6
   ULP_VALVE_A,         // 7  (valve a status)
   ULP_VALVE_B,         // 8  (uvalve b status)
@@ -99,7 +99,8 @@ enum {
   ULP_TXCYCLETIME,        //  20 
   ULP_TXCYCLEFAST,        //  21
   ULP_COUNT_PENDING,               //  22
-  ULP_PROG_START = 23,   // load instructions here
+  ULP_COUNT,                //23
+  ULP_PROG_START = 24,   // load instructions here
 };
 
 enum {
@@ -123,9 +124,16 @@ enum {
   ULP_SKIP_MERGE, 
   ULP_CPU_IS_AWAKE, 
   ULP_BUMP_HI,
+  UL_BUMP_PEND_HI,
+  ULP_SKIP_MERGE_BUMP,
+  ULP_DO_MERGE,
+  ULP_DO_MERGE_BUMP,
   RESET_PENDING_NO_WRAP,
   RESET_PENDING_WRAP,
-
+  ULP_TEST_CPU,
+  ULP_BUMP_HI_MERGE,
+  ULP_CLR_PENDING,
+  ULP_BUMP_HI_EDGE,
 };
 
 // Shared buffers defined in sensor_solenoid.cpp

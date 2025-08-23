@@ -38,8 +38,6 @@
 #include "soc/sens_reg.h"
 #include <Arduino.h>
 #include "Adafruit_SHT4x.h"
-#include <HardwareSerial.h>
-#include "telnet_debug.h"
 
 
 // 2) A handy macro to get a pointer to any struct at a given word‐index:
@@ -59,29 +57,25 @@ Preferences prefs;  // for NVM
 Adafruit_SHT4x sht4 = Adafruit_SHT4x();
 
 char buffer[64];
-uint16_t depthRaw;              //  for the water pressure sensor populated by the function - bool readDepthSensor(uint16_t &depthRaw)
 ValveState_t vlv_packet_pend;  // used to keep the command and the state independent until resolved
-
 Preferences pref;
 
-const char* ssid = "Peter_Study2";
-const char* password = "Mpjsma0624!";
-
-
-//#define REED_NODE       true
+#define REED_NODE       true
 //#define VALVE_NODE      true
-#define SOIL_SENSOR_NODE true
+//#define SOIL_SENSOR_NODE true
+//#define LAKE_NODE  true
+
 /* OTAA para*/
 uint8_t devEui[] = { 0x70, 0xB3, 0xD5, 0x7E, 0xD0, 0x06, 0x53, 0xf3 };
 uint8_t appEui[] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 uint8_t appKey[] = { 0x74, 0xD6, 0x6E, 0x63, 0x45, 0x82, 0x48, 0x27, 0xFE, 0xC5, 0xB7, 0x70, 0xBA, 0x2B, 0x50, 0x4a };
 
-/* ABP para*/
+/* ABP para --  not used for this project*/
 uint8_t nwkSKey[] = { 0x15, 0xb1, 0xd0, 0xef, 0xa4, 0x63, 0xdf, 0xbe, 0x3d, 0x11, 0x18, 0x1e, 0x1e, 0xc7, 0xda, 0x85 };
 uint8_t appSKey[] = { 0xd7, 0x2c, 0x78, 0x75, 0x8c, 0xdc, 0xca, 0xbf, 0x55, 0xee, 0x4a, 0x77, 0x8d, 0x16, 0xef, 0x67 };
 uint32_t devAddr = (uint32_t)0x007e6ae1;
 
-/*LoraWan channelsmask, default channels 0-7*/
+/*LoraWan channelsmask, default channels US915 band 2 hybrid*/
 uint16_t userChannelsMask[6] = { 0xff00, 0x0000, 0x0000, 0x0001, 0x0000, 0x0000 };
 
 /*LoraWan region, select in arduino IDE tools*/
@@ -91,10 +85,14 @@ LoRaMacRegion_t loraWanRegion = ACTIVE_REGION;
 DeviceClass_t loraWanClass = CLASS_A;
 
 /*the application data transmission duty cycle.  value in [ms].*/
-RTC_DATA_ATTR uint32_t appTxDutyCycle = 180 * 60 * 1000;
-RTC_DATA_ATTR uint32_t TxDutyCycle_hold;            // stores cycle time when valve is open and lora cycling faster
+RTC_DATA_ATTR uint32_t appTxDutyCycle = 1 * 60 * 1000;
+RTC_DATA_ATTR uint32_t TxDutyCycle_hold;
 RTC_DATA_ATTR uint32_t initialCycleFast = 6;        //  number of time to cycle fast on startup
 static const uint32_t TX_CYCLE_FAST_TIME = 30000ul;
+//These are in RTC defined in lorawanapp.cpp
+extern int revrssi;
+extern int revsnr;
+
 
 /*OTAA or ABP*/
 bool overTheAirActivation = true;
@@ -108,12 +106,14 @@ bool isTxConfirmed = false;
 /* Application port */
 #ifdef REED_NODE
 uint8_t appPort = 8;          //  REED_NODE port 8
-#endif
-#ifdef VALVE_NODE
+#elif defined VALVE_NODE
 uint8_t appPort = 9;          // VALVE+NODE port 9
-#endif
-#ifdef SOIL_SENSOR_NODE
-uint8_t appPort = 10;
+#elif defined SOIL_SENSOR_NODE
+uint8_t appPort = 6;          // VALVE+NODE port 9
+#elif defined LAKE_NODE
+uint8_t appPort = 12;          // VALVE+NODE port 9
+#else
+#error "Define a node type in the list REED_NODE, VALVE_NODE, SOIL_SENSOR_NODE, LAKE_NODE"
 #endif
 
 /*!
@@ -191,7 +191,7 @@ void pop_data(void){
   uint32_t ticks_delta=0;
 
   //  BATTERY PERCENTAGE TO rtc
-  RTC_SLOW_MEMORY[ULP_BAT_PCT] = bat_cap8();
+(void)bat_cap8();
 
 #ifdef VALVE_NODE
   //  line pressure, for valve node
@@ -201,30 +201,35 @@ void pop_data(void){
 #endif 
 
 #ifdef REED_NODE
+  uint32_t count = ((uint32_t)((uint16_t)RTC_SLOW_MEMORY[ULP_COUNT_HI]) << 16) |
+                 (uint32_t)((uint16_t)RTC_SLOW_MEMORY[ULP_COUNT_LO]);
+  uint16_t lo   = (uint16_t)RTC_SLOW_MEMORY[ULP_COUNT_LO];
+  uint16_t last = (uint16_t)RTC_SLOW_MEMORY[ULP_LAST_SENT];
+  uint16_t diff = (uint16_t)(lo - last);   // modulo-16, safe across wrap
+
   //  reed count delta FROM rtc , low two bytes only
-  Serial.printf("ULP_COUNT_LO %lu \n", RTC_SLOW_MEMORY[ULP_COUNT_LO]);
+  Serial.printf("ULP_COUNT %lu \n", count);
   Serial.printf("ULP_LAST_SENT %lu \n", RTC_SLOW_MEMORY[ULP_LAST_SENT]);
   Serial.printf("ULP_TS_DELTA_LO %lu \n", RTC_SLOW_MEMORY[ULP_TS_DELTA_LO]);
-  RTC_SLOW_MEMORY[ULP_REED_DELTA] = (RTC_SLOW_MEMORY[ULP_COUNT_LO] - RTC_SLOW_MEMORY[ULP_LAST_SENT]);    // used in display screen
-  RTC_SLOW_MEMORY[ULP_LAST_SENT] = RTC_SLOW_MEMORY[ULP_COUNT_LO];     // update ULP_LAST_SENT
+  RTC_SLOW_MEMORY[ULP_REED_DELTA] = diff;    // used in display screen
+  RTC_SLOW_MEMORY[ULP_LAST_SENT] = lo;     // advance marker
   Serial.printf("ULP_REED_DELTA %lu \n", RTC_SLOW_MEMORY[ULP_REED_DELTA]);
   //  flow calc stored in RTC_SLOW_MEMORY[ULP_FLOW_RATE]
   //  if ULP_TICK_POP <> 0 or no reed delta, then flow is zero
   ticks_delta = (((uint32_t)((uint16_t)RTC_SLOW_MEMORY[ULP_TS_DELTA_HI] << 16)) | (uint16_t)(RTC_SLOW_MEMORY[ULP_TS_DELTA_LO]));
+  if (ticks_delta) {
+        RTC_SLOW_MEMORY[ULP_FLOW_RATE] = (uint32_t)((VOLUME_PER_TICK * TICKS_PER_MIN) / ticks_delta);
+  } else {
+    RTC_SLOW_MEMORY[ULP_FLOW_RATE] = 0;
+  }
   Serial.printf("ticks_delta %lu \n", ticks_delta);
 
   if ((RTC_SLOW_MEMORY[ULP_TS_DELTA_TICK_POP]) || (RTC_SLOW_MEMORY[ULP_REED_DELTA] == 0)) {
-    RTC_SLOW_MEMORY[ULP_FLOW_RATE] = 0;
     RTC_SLOW_MEMORY[ULP_VOLUME_DELTA] = 0;    
   } else {    
-    RTC_SLOW_MEMORY[ULP_VOLUME_DELTA] = (uint32_t)(RTC_SLOW_MEMORY[ULP_REED_DELTA]) * VOLUME_PER_TICK;
-    RTC_SLOW_MEMORY[ULP_FLOW_RATE] = (uint32_t)((VOLUME_PER_TICK * TICKS_PER_MIN) / ticks_delta);
+    RTC_SLOW_MEMORY[ULP_VOLUME_DELTA] = diff * VOLUME_PER_TICK;
   }
   RTC_SLOW_MEMORY[ULP_TS_DELTA_TICK_POP] |= 0x02;         //  set bit 1 so that we know this is stale (sent)  
-#endif
-
-#ifdef SOIL_SENSOR_NODE
-  readSoilSensor(1);
 #endif
 
 }
@@ -238,8 +243,7 @@ static void display_status() {
   display.screenRotate(ANGLE_180_DEGREE);
   display.clear();
   
-  display.drawLine(0, 25, 120, 25);
-  display.drawLine(150, 25, 270, 25);
+
   display.setFont(ArialMT_Plain_16);
   display.setTextAlignment(TEXT_ALIGN_CENTER);
   //common screen entries:  battery, cycle time, rssi, snr, display name
@@ -247,9 +251,9 @@ static void display_status() {
   display.drawString(210, 50, buffer);
   sprintf(buffer, "cycle %lu min", (uint32_t)appTxDutyCycle / 60000);  //  SHOULD BE 60000 milliseconds to mins
   display.drawString(210, 70, buffer);
-  sprintf(buffer, "rssi (dBm): %d", (int16_t)(RTC_SLOW_MEMORY[ULP_RSSI] & 0xffff));
+  sprintf(buffer, "rssi (dBm): %d snr: %d", revrssi, revsnr);
   display.drawString(210, 90, buffer);
-  sprintf(buffer, "SNR: %d", (int8_t)(RTC_SLOW_MEMORY[ULP_SNR] & 0xff));
+  sprintf(buffer, "Eui: ...%02X%02X", devEui[6], devEui[7]);  //  last two bytes of devEui
   display.drawString(210, 110, buffer);
   display.setFont(ArialMT_Plain_24);
   prefs.begin("flash_namespace", true);                                  // open as read only
@@ -257,6 +261,8 @@ static void display_status() {
   prefs.end();
 
   #ifdef VALVE_NODE
+  display.drawLine(0, 25, 120, 25);
+  display.drawLine(150, 25, 270, 25);
   display.drawString(60, 0, "valve");
   show_vlv_status(0);
   display.drawString(60, 40, buffer);
@@ -266,33 +272,26 @@ static void display_status() {
   #endif
 
   #ifdef REED_NODE
-  display.drawString(60, 0, "meter ticks");
-  sprintf(buffer, "%u lpm", (uint32_t)(RTC_SLOW_MEMORY[ULP_FLOW_RATE]));
+  display.drawLine(0, 25, 80, 25);
+  display.drawLine(95, 25, 300, 25);
+  display.drawString(80, 0, "interval  total c");
+  sprintf(buffer, "%u g/m", (uint32_t)(RTC_SLOW_MEMORY[ULP_FLOW_RATE]));
   display.drawString(60, 35, buffer);
-  sprintf(buffer, "%u l", (uint32_t)(RTC_SLOW_MEMORY[ULP_VOLUME_DELTA]));
+  sprintf(buffer, "%u g", (uint32_t)(RTC_SLOW_MEMORY[ULP_VOLUME_DELTA]));
   display.drawString(60, 65, buffer); 
-  sprintf(buffer, "%lu", RTC_SLOW_MEMORY[ULP_COUNT_LO]);  // counter
-  display.drawString(210, 0, buffer);
+  uint32_t count = ((uint32_t)((uint16_t)RTC_SLOW_MEMORY[ULP_COUNT_HI]) << 16) |
+                 (uint32_t)((uint16_t)RTC_SLOW_MEMORY[ULP_COUNT_LO]);
+  sprintf(buffer, "%lu", count);  // counter
+  display.drawString(220, 0, buffer);
   display.setFont(ArialMT_Plain_16);
   sprintf(buffer, "reed/wake: %lu", RTC_SLOW_MEMORY[ULP_WAKE_THRESHOLD]);  // reed closures per wake cycle 
   display.drawString(210, 30, buffer);
   #endif
 
-  #ifdef SOIL_SENSOR_NODE
-  display.drawString(60, 0, "Soil shallow, deep");
-  sprintf(buffer, "H20% %u,  %u", soilSensorOut[0], soilSensorOut[3]);
-  display.drawString(60, 35, buffer);
-  sprintf(buffer, "degC %u, %u", soilSensorOut[1], soilSensorOut[4]);
-  display.drawString(60, 65, buffer); 
-  sprintf(buffer, "pH %u, %u", soilSensorOut[2], soilSensorOut[5]);  // 
-  display.drawString(210, 0, buffer);
-  #endif
-
-
   Serial.print("about to display.display \n");
   display.display();
 
-    for(int i = 0; i < 23; i++){
+    for(int i = 0; i < 25; i++){
     Serial.printf(" [%2d]: 0x%08X\n", i, RTC_SLOW_MEMORY[i]);
     }
 
@@ -336,6 +335,8 @@ static void prepareTxFrame(uint8_t port) {
   appData[appDataSize++] = (uint8_t)((RTC_SLOW_MEMORY[ULP_REED_DELTA] & 0xff));    //  lsb
   appData[appDataSize++] = (uint8_t)((RTC_SLOW_MEMORY[ULP_FLOW_RATE] >> 8));       //  msb
   appData[appDataSize++] = (uint8_t)((RTC_SLOW_MEMORY[ULP_FLOW_RATE] & 0xff));    //  lsb
+  appData[appDataSize++] = (uint8_t)((RTC_SLOW_MEMORY[ULP_COUNT_HI] >> 8));       //  msb
+  appData[appDataSize++] = (uint8_t)((RTC_SLOW_MEMORY[ULP_COUNT_HI] & 0xff));    //  lsb
   appData[appDataSize++] = (uint8_t)((RTC_SLOW_MEMORY[ULP_COUNT_LO] >> 8));       //  msb
   appData[appDataSize++] = (uint8_t)((RTC_SLOW_MEMORY[ULP_COUNT_LO] & 0xff));    //  lsb
   appData[appDataSize++] = (uint8_t)((RTC_SLOW_MEMORY[ULP_BAT_PCT] & 0xff));  //  
@@ -347,16 +348,6 @@ static void prepareTxFrame(uint8_t port) {
   appData[appDataSize++] = (uint8_t)(valveA -> time);       //  valve A
   appData[appDataSize++] = (uint8_t)(valveB -> time);       //  valve B 
   appData[appDataSize++] = (uint8_t)((RTC_SLOW_MEMORY[ULP_BAT_PCT] & 0xff));  //
-  #endif
-
-  #ifdef SOIL_SENSOR_NODE
-  appData[appDataSize++] = (uint8_t)(soilSensorOut[0]);       //  moist shallow
-  appData[appDataSize++] = (uint8_t)(soilSensorOut[1]);       //  temp C shallow
-  appData[appDataSize++] = (uint8_t)(soilSensorOut[2]);    //  pH shallow
-  appData[appDataSize++] = (uint8_t)(soilSensorOut[3]);       //  moist deep
-  appData[appDataSize++] = (uint8_t)(soilSensorOut[4]);       //  temp C deep
-  appData[appDataSize++] = (uint8_t)(soilSensorOut[5]);    //  pH deep
-  appData[appDataSize++] = (uint8_t)((RTC_SLOW_MEMORY[ULP_BAT_PCT] & 0xff));  //  battery pct
   #endif
 
   // for(int i = 0; i < 16; i++){
@@ -422,7 +413,7 @@ void downLinkDataHandle(McpsIndication_t *mcpsIndication) {
       if (len == 1) {
         TxDutyCycle_pend = (uint32_t)(mcpsIndication->Buffer[0]) * 1000 * 60;
       } else {
-        TxDutyCycle_pend = ((uint32_t)mcpsIndication->Buffer[0] << 8 | mcpsIndication->Buffer[1]) * (1000 * 60);
+        TxDutyCycle_pend = ((uint32_t)(((mcpsIndication->Buffer[0]) << 8) | (mcpsIndication->Buffer[1]))) * 1000 * 60;
       }
       if (valveA->onA | valveB->onB ) {
         TxDutyCycle_hold = TxDutyCycle_pend;
@@ -451,45 +442,66 @@ void downLinkDataHandle(McpsIndication_t *mcpsIndication) {
     prefs.putString("screenMsg", str);
     prefs.end();
     break;
-  case 8:       //  reset ULP_WAKE_THRESHOLD, the numberof reed activations to wake the cpu
-    Serial.println("in the case 8 statement for ULP_PULSE_THRESHOLD");
-    if (mcpsIndication->BufferSize == 1) {
-      RTC_SLOW_MEMORY[ULP_WAKE_THRESHOLD] = (uint16_t)mcpsIndication->Buffer[0];
-    } else if (mcpsIndication->BufferSize == 2) {
-      RTC_SLOW_MEMORY[ULP_WAKE_THRESHOLD] =
-     (uint16_t)mcpsIndication->Buffer[0] <<8 | ((uint16_t)mcpsIndication->Buffer[1]);
-    } 
-    // store it as a String in NVS
-    prefs.begin("flash_namespace", false);
-    prefs.putUShort("ULP_WAKE_THRESHOLD", RTC_SLOW_MEMORY[ULP_WAKE_THRESHOLD]);
-    prefs.end();
+case 8: {
+  uint16_t th = (mcpsIndication->BufferSize == 1)
+                  ? (uint16_t)mcpsIndication->Buffer[0]
+                  : (uint16_t)(((uint16_t)mcpsIndication->Buffer[0] << 8) |
+                                (uint16_t)mcpsIndication->Buffer[1]);
+  RTC_SLOW_MEMORY[ULP_WAKE_THRESHOLD] = th;
+
+  if (!prefs.begin("cfg", false)) {   // NEW namespace
+    Serial.println("NVS begin failed");
     break;
-    }  // of switch
-  RTC_SLOW_MEMORY[ULP_RSSI] = mcpsIndication->Rssi;
-  RTC_SLOW_MEMORY[ULP_SNR] = mcpsIndication->Snr;
+  }
+  size_t w = prefs.putUShort("wake_th", th);  // NEW key
+  uint16_t v = prefs.getUShort("wake_th", 0xFFFF);
+  prefs.end();
+  Serial.printf("NVS write %s (wrote=%u bytes, value=%u, verify=%u)\n",
+                (w == sizeof(uint16_t)) ? "OK" : "FAIL",
+                (unsigned)w, (unsigned)th, (unsigned)v);
+  break;
+  } // of CASE 8
+
+} // of switch
+  revrssi = mcpsIndication->Rssi;
+  revsnr = mcpsIndication->Snr;
 
   Serial.println("downlink processed");
 }  // of function
 
 /* set up the ULP to count pulses, and wake on 100 pulses, after each lorawan data send, the last_pulse_count is advanced*/
 
-// ULP program: reed-pulse counter with dynamic threshold in RTC_SLOW_MEM
+/* set up the ULP to count pulses, and wake on 100 pulses, after each lorawan data send, the last_pulse_count is advanced*/
+
+/* set up the ULP to count pulses, and wake on 100 pulses, after each lorawan data send, the last_pulse_count is advanced*/
+
 static const ulp_insn_t ulp_program[] = {
   M_LABEL(ULP_ENTRY_LABEL),
-  I_DELAY(45),  // ≈500 µs @90 kHz
+  I_DELAY(45),  // needs to be calibrated to time
 
-// ── Merge ULP_COUNT_PENDING into ULP_COUNT if pending > 0 ───────────────
+// ── Merge PENDING (16-bit) into 32-bit COUNT (HI:LO) ──
 I_MOVI(R1, ULP_COUNT_PENDING),
-I_LD(R0, R1, 0),
-M_BL(ULP_SKIP_MERGE, 0),
+I_LD  (R0, R1, 0),
+I_SUBI(R0, R0, 0),
+M_BXZ (ULP_SKIP_MERGE),
 
 I_MOVI(R2, ULP_COUNT_LO),
-I_LD(R3, R2, 0),
-I_ADDR(R3, R3, R0),
-I_ST(R3, R2, 0),
+I_LD  (R3, R2, 0),
+I_ADDR(R3, R3, R0),         // add pending → LO
+I_ST  (R3, R2, 0),
+M_BXF (ULP_BUMP_HI_MERGE),  // overflow → bump HI
+M_BX  (ULP_CLR_PENDING),
 
+M_LABEL(ULP_BUMP_HI_MERGE),
+I_MOVI(R2, ULP_COUNT_HI),
+I_LD  (R3, R2, 0),
+I_ADDI(R3, R3, 1),
+I_ST  (R3, R2, 0),
+
+M_LABEL(ULP_CLR_PENDING),
 I_MOVI(R0, 0),
-I_ST(R0, R1, 0),  // clear pending
+I_MOVI(R1, ULP_COUNT_PENDING),
+I_ST  (R0, R1, 0),
 
 M_LABEL(ULP_SKIP_MERGE),
 
@@ -521,52 +533,33 @@ M_LABEL(ULP_SKIP_MERGE),
   M_BL(ULP_NO_EDGE, 1), M_BG(ULP_NO_EDGE, 1),
 
   //── 3) Conditional bump ─────────────────────────────────────
-// Check CPU state: 0 = idle, 1 = active
-I_RD_REG(RTC_CNTL_LOW_POWER_ST_REG, RTC_CNTL_MAIN_STATE_IN_IDLE_S, RTC_CNTL_MAIN_STATE_IN_IDLE_S),
-M_BL(ULP_CPU_IS_AWAKE, 0),         // if CPU is not idle → use pending
+  I_RD_REG(RTC_CNTL_LOW_POWER_ST_REG, RTC_CNTL_MAIN_STATE_IN_IDLE_S, RTC_CNTL_MAIN_STATE_IN_IDLE_S),
+  M_BG(ULP_CPU_IS_AWAKE, 0),  // if flag == 1, CPU is awake, use pending count
 
-// ── CPU is idle → increment ULP_COUNT_LO by 1
+  // ── CPU idle → bump 32-bit COUNT (HI:LO) ──
 I_MOVI(R1, ULP_COUNT_LO),
-I_LD(R3, R1, 0),
+I_LD  (R3, R1, 0),
 I_ADDI(R3, R3, 1),
-I_ST(R3, R1, 0),
-I_MOVR(R0, R3),
-M_BE(ULP_BUMP_HI, 0),              // if LO == 0 → wrap occurred
-M_BX(ULP_AFTER_COUNT),
+I_ST  (R3, R1, 0),
+M_BXF (ULP_BUMP_HI_EDGE),
+M_BX  (ULP_AFTER_COUNT),
 
-M_LABEL(ULP_CPU_IS_AWAKE),
-// ── CPU is active → increment ULP_COUNT_PENDING
-I_MOVI(R1, ULP_COUNT_PENDING),
-I_LD(R2, R1, 0),                   // R2 = old
-I_ADDI(R2, R2, 1),                 // R2 = new
-I_ST(R2, R1, 0),
-I_MOVR(R3, R2),                    // R3 = new
-
-// Check for wrap
-M_BL(RESET_PENDING_WRAP, 1),       // if new < old → wrapped
-M_BX(RESET_PENDING_NO_WRAP),
-
-M_LABEL(RESET_PENDING_WRAP),
-I_MOVI(R0, 0),
-I_MOVI(R1, ULP_COUNT_PENDING),
-I_ST(R0, R1, 0),
-// fall through to shared bump
-
-M_LABEL(ULP_BUMP_HI),
+M_LABEL(ULP_BUMP_HI_EDGE),
 I_MOVI(R1, ULP_COUNT_HI),
-I_LD(R2, R1, 0),
-I_ADDI(R2, R2, 1),
-I_ST(R2, R1, 0),
-M_BX(ULP_AFTER_COUNT),
+I_LD  (R3, R1, 0),
+I_ADDI(R3, R3, 1),
+I_ST  (R3, R1, 0),
+M_BX  (ULP_AFTER_COUNT),
 
-M_LABEL(RESET_PENDING_NO_WRAP),
-I_MOVI(R0, 0),
-I_MOVI(R1, ULP_COUNT_PENDING),
-I_ST(R0, R1, 0),
-M_BX(ULP_AFTER_COUNT),
+  M_LABEL(ULP_CPU_IS_AWAKE),
+  // CPU is active → bump ULP_COUNT_PENDING
+  I_MOVI(R1, ULP_COUNT_PENDING),
+  I_LD(R3, R1, 0),
+  I_ADDI(R3, R3, 1),
+  I_ST(R3, R1, 0),
+  M_BX(ULP_AFTER_COUNT),
 
-M_LABEL(ULP_AFTER_COUNT),
-
+  M_LABEL(ULP_AFTER_COUNT),
 
   //── 4) Snapshot ULP_TIMER → Δ lo/hi/pop ───────────────────
   I_MOVI(R1, ULP_TIMER_LO), I_LD(R0, R1, 0), I_MOVI(R1, ULP_TS_DELTA_LO), I_ST(R0, R1, 0),
@@ -576,155 +569,129 @@ M_LABEL(ULP_AFTER_COUNT),
   I_MOVI(R0, 0), I_MOVI(R1, ULP_TIMER_LO), I_ST(R0, R1, 0),
   I_MOVI(R1, ULP_TIMER_HI), I_ST(R0, R1, 0), I_MOVI(R1, ULP_TICK_POP), I_ST(R0, R1, 0),
 
-  //── 5) Wake logic: diff = count - last_sent, skip if diff < threshold ─────
-  I_MOVI(R1, ULP_COUNT_LO),           I_LD(R0, R1, 0),         // R0 = count
-  I_MOVI(R1, ULP_LAST_SENT),       I_LD(R1, R1, 0),         // R1 = last_sent
-  I_SUBR(R0, R0, R1),                                      // R0 = diff
-  I_MOVI(R1, ULP_WAKE_THRESHOLD),  I_LD(R1, R1, 0),         // R1 = threshold
-
-  I_MOVI(R2, ULP_DEBUG_PIN_STATE), I_ST(R0, R2, 0),         // debug diff
-  M_BL(ULP_NO_WAKE, 1),                                     // ✅ if diff < threshold, skip
+// ── Wake logic: use LO only (diff16 = LO - LAST_SENT) ──
+I_MOVI(R1, ULP_COUNT_LO),
+I_LD  (R0, R1, 0),            // R0 = LO
+I_MOVI(R1, ULP_LAST_SENT),
+I_LD  (R1, R1, 0),            // R1 = last_sent (16-bit)
+I_SUBR(R0, R0, R1),           // diff16
+I_MOVI(R2, ULP_DEBUG_PIN_STATE),
+I_ST  (R0, R2, 0),
+I_MOVI(R1, ULP_WAKE_THRESHOLD),
+I_LD  (R1, R1, 0),
+I_SUBR(R0, R1, R0),           // threshold - diff
+M_BG  (ULP_NO_WAKE, 0),
 
   // only wake if main CPU idle
   I_RD_REG(RTC_CNTL_LOW_POWER_ST_REG, RTC_CNTL_MAIN_STATE_IN_IDLE_S, RTC_CNTL_MAIN_STATE_IN_IDLE_S),
-  M_BL(ULP_NO_WAKE, 0),            // skip if CPU awake
+  M_BG(ULP_NO_WAKE, 0),            // skip if CPU awake
   I_WAKE(),
 
   M_LABEL(ULP_NO_WAKE),
-    M_BX(ULP_ENTRY_LABEL),
   M_LABEL(ULP_NO_EDGE),
     M_BX(ULP_ENTRY_LABEL),
   };
 
 
 void setup() {
-  //  for debug only !!
-  //initTelnet(ssid, password);
-  //handleTelnet();
-
   Serial.begin(115200);
   hardware_pins_init();  //
   setPowerEnable(1);
 
-  Wire.begin(PIN_SDA, PIN_SCL);  // three lines set up the display
-  if (!sht4.begin()) {
-    Serial.println("Couldn't find SHT40");
-    } else{
-      Serial.println("found the SHT40");
-    }
-  sht4.setPrecision(SHT4X_MED_PRECISION); // or HIGH, MED, LOW
-  sht4.setHeater(SHT4X_NO_HEATER);         // optional: use 
+  // Wire.begin(PIN_SDA, PIN_SCL);  // three lines set up the display
+  // if (!sht4.begin()) {
+  //   Serial.println("Couldn't find SHT40");
+  //   } else{
+  //     Serial.println("found the SHT40");
+  //   }
+  // sht4.setPrecision(SHT4X_MED_PRECISION); // or HIGH, MED, LOW
+  // sht4.setHeater(SHT4X_NO_HEATER);         // optional: use 
 
   display.init();
   display.clear();
   display.screenRotate(ANGLE_180_DEGREE);
-  display.drawString(0, 0, "init >>> alive ");
+  display.setFont(ArialMT_Plain_24);
+  display.drawString(0, 50, "connecting >>> LoRaWAN");
   display.display();
   delay(5000);
   
+    // configure RTC GPIO, enable ULP wake up.  
+  ESP_ERROR_CHECK(rtc_gpio_hold_dis(RTC_GPIO_SENSOR_PIN)); 
+  ESP_ERROR_CHECK(rtc_gpio_init(RTC_GPIO_SENSOR_PIN));
+  ESP_ERROR_CHECK(rtc_gpio_set_direction(RTC_GPIO_SENSOR_PIN, RTC_GPIO_MODE_INPUT_ONLY));
+  ESP_ERROR_CHECK(rtc_gpio_set_direction_in_sleep((gpio_num_t)RTC_GPIO_SENSOR_PIN, RTC_GPIO_MODE_INPUT_ONLY));
+  ESP_ERROR_CHECK(rtc_gpio_pullup_dis((gpio_num_t)RTC_GPIO_SENSOR_PIN));
+  ESP_ERROR_CHECK(rtc_gpio_pulldown_dis((gpio_num_t)RTC_GPIO_SENSOR_PIN));
+  ESP_ERROR_CHECK(rtc_gpio_hold_en(RTC_GPIO_SENSOR_PIN));
+  ESP_ERROR_CHECK(esp_sleep_enable_ulp_wakeup());
 
-  initRS485(4800);
-
-  Serial.println("init 485");
-    // while (1){
-    //   readDepthSensor(depthRaw);
-    //   Serial.printf("the depth meter result is %u \n", depthRaw);
-    //   delay(5000);
-    // }
-
-    // 1) set up ULP if this is reboot
     // figure out why we’re here
   uint32_t count;
-  char screenName[17] = "unnamed";
+  char screenName[17];
   String tmp;
-
- 
-    // The asleep‐flag is checked by ULP so ULP won’t access sharded memory while CPU awake
-  esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
   uint16_t defaultTh;
+
+  esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+
   switch(cause){
   case ESP_SLEEP_WAKEUP_ULP:
     {
     // ── ULP woke us up ───────────────────────────────────────────────────────
-    // fire the ULP every 100 ms (≈9000 ticks @90 kHz RTC slow-clk)
-    ESP_ERROR_CHECK( ulp_set_wakeup_period(0, 90) );
-    count = RTC_SLOW_MEM[ULP_COUNT_LO];
+    uint32_t count = ((uint32_t)((uint16_t)RTC_SLOW_MEMORY[ULP_COUNT_HI]) << 16) |
+                 (uint32_t)((uint16_t)RTC_SLOW_MEMORY[ULP_COUNT_LO]);
+
     Serial.printf("Woke by ULP reed trigger, pulse count = %u\n", count);
-    ESP_ERROR_CHECK( esp_sleep_enable_ulp_wakeup() );
     }
     break;
 
   case ESP_SLEEP_WAKEUP_TIMER:
-    { 
-      
+    {      
     // ── timer woke us up ───────────────────────────────────────────────────────
-    ESP_ERROR_CHECK( ulp_set_wakeup_period(0, 90) );
-    count = RTC_SLOW_MEM[ULP_COUNT_LO];
+    uint32_t count = ((uint32_t)((uint16_t)RTC_SLOW_MEMORY[ULP_COUNT_HI]) << 16) |
+                 (uint32_t)((uint16_t)RTC_SLOW_MEMORY[ULP_COUNT_LO]);
     Serial.printf("Woke by RTC TIMER, pulse count = %u\n", count);
-    ESP_ERROR_CHECK( esp_sleep_enable_ulp_wakeup() );
     }
     break;
 
   case ESP_SLEEP_WAKEUP_UNDEFINED : //  THIS IS COLD RESTART
     {
+  //  clean out RTC
     memset(RTC_SLOW_MEM, 0, CONFIG_ULP_COPROC_RESERVE_MEM);
-    ESP_ERROR_CHECK( rtc_gpio_init(RTC_GPIO_SENSOR_PIN) );
-    //ESP_ERROR_CHECK( rtc_gpio_input_enable(RTC_GPIO_SENSOR_PIN) );
-    ESP_ERROR_CHECK( rtc_gpio_set_direction(RTC_GPIO_SENSOR_PIN, RTC_GPIO_MODE_INPUT_ONLY) );
-    ESP_ERROR_CHECK( rtc_gpio_set_direction_in_sleep((gpio_num_t)RTC_GPIO_SENSOR_PIN, RTC_GPIO_MODE_INPUT_ONLY) );
-    ESP_ERROR_CHECK( rtc_gpio_pullup_dis((gpio_num_t)RTC_GPIO_SENSOR_PIN) );
-    ESP_ERROR_CHECK( rtc_gpio_pulldown_dis((gpio_num_t)RTC_GPIO_SENSOR_PIN) );
-    ESP_ERROR_CHECK( rtc_gpio_hold_en(RTC_GPIO_SENSOR_PIN));
-    ESP_ERROR_CHECK( ulp_set_wakeup_period(0, 90) );
-    size_t size = sizeof(ulp_program) / sizeof(ulp_insn_t);
-
-    if (!prefs.begin("flash_namespace", false)) {
-      Serial.println("ERROR: could not open NVS namespace");
-    }
     // see if we have a stored wake threshold
-    if (prefs.isKey("ULP_WAKE_THRESHOLD")) {
-      // key exists, grab it (stored as a 16-bit value)
-      defaultTh = prefs.getUShort("ULP_WAKE_THRESHOLD");
-      RTC_SLOW_MEM[ULP_WAKE_THRESHOLD] = defaultTh;
-      Serial.printf("Restored threshold %u from NVS\n", defaultTh);
-    } else {
-      // no key yet – use some default
-      defaultTh = PULSE_THRESHOLD;  // set in sensor-solenoid.h
-      RTC_SLOW_MEM[ULP_WAKE_THRESHOLD] = defaultTh;
-      Serial.printf("No saved threshold, using default %u\n", defaultTh);
-    }
+    uint16_t th = PULSE_THRESHOLD;  // default
+    if (prefs.begin("cfg", true)) { // read-only
+      th = prefs.getUShort("wake_th", PULSE_THRESHOLD);
+    }  // of if
+    RTC_SLOW_MEMORY[ULP_WAKE_THRESHOLD] = th;
+    Serial.printf("ULP_WAKE_THRESHOLD loaded: %u\n", th);
 
     // see if we have a stored name port 7 to set
-    if (prefs.isKey("screenMsg")) {
-      // key exists, grab it (stored as a 16-bit value), else 'no name'
-      tmp = prefs.getString("screenMsg", "no name");
-      tmp.toCharArray(screenName, sizeof(screenName));
-      Serial.printf("Restored threshold %s from NVS\n", screenName);
-    } 
+    
+    if (prefs.begin("flash_namespace", true)) {
+    String s = prefs.getString("screenMsg", "no name");
+    s.toCharArray(screenName, sizeof(screenName));
+    Serial.printf("Restored screen name %s from NVS\n", screenName);
     prefs.end();
+  }  //  of if
+   //  clear and then load and then kick off the ULP
 
+    size_t size = sizeof(ulp_program) / sizeof(ulp_insn_t);
     esp_err_t result = ulp_process_macros_and_load(ULP_PROG_START, ulp_program, &size);
     Serial.printf("load → %s, %u instructions\n",
               esp_err_to_name(result),
               (unsigned)size);
-    ESP_ERROR_CHECK( esp_sleep_enable_ulp_wakeup() );
-    // 4) Kick off the ULP only if this is a reed node, otherwise we still load it to get access the the ULP variables from the enum in the .h file.  
-     #ifdef REED_NODE
+    // 4) Kick off the ULP
     ESP_ERROR_CHECK( ulp_run(ULP_PROG_START) );
-      #endif  //  REED_NODE
-    }
+    }  // of case UNDEFINED (reboot)
     break;
 
     default: {
-      ESP_ERROR_CHECK( ulp_set_wakeup_period(0, 90) );
-      count = RTC_SLOW_MEM[ULP_COUNT_LO];
+      count = ((uint32_t)((uint16_t)RTC_SLOW_MEMORY[ULP_COUNT_HI]) << 16) |
+                 (uint32_t)((uint16_t)RTC_SLOW_MEMORY[ULP_COUNT_LO]);
       Serial.printf("Woke by DEFAULT, pulse count = %u\n", count);
-      ESP_ERROR_CHECK( esp_sleep_enable_ulp_wakeup() );
       }
     break;
   }  // cause
-
-
 // while(1){
 //     for(int i = 0; i < 16; i++){
 //     Serial.printf(" [%2d]: 0x%08X\n", i, RTC_SLOW_MEM[i]);
@@ -732,6 +699,8 @@ void setup() {
 //     delay(60000);
 // }
   Mcu.begin(HELTEC_BOARD, SLOW_CLK_TPYE);
+
+
 }; // of function
 
 void loop() {
@@ -766,7 +735,6 @@ void loop() {
         //  LoRaWAN.cycle(TX_CYCLE_FAST_TIME);
         //  deviceState = DEVICE_STATE_SLEEP;
         //} else {
-          Serial.printf("About to sleep for %u ms\n", appTxDutyCycle);
           txDutyCycleTime = appTxDutyCycle + randr(-APP_TX_DUTYCYCLE_RND, APP_TX_DUTYCYCLE_RND);
           LoRaWAN.cycle(txDutyCycleTime);
           deviceState = DEVICE_STATE_SLEEP;
