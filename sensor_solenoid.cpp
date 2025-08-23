@@ -92,7 +92,7 @@ uint8_t bat_cap8(){
   if (pct > 100) pct = 100;                // clamp
 
   RTC_SLOW_MEM[ULP_BAT_PCT] = pct;  //  ULP_BAT_PCT is defined in the .h
-  return ((uint8_t)pct);
+  return ((uint8_t)(pct * 2.55));   //  lorawan.cpp wants this full byte form
 }
 
 uint16_t readMCP3421avg_cont() {
@@ -233,50 +233,61 @@ bool readDepthSensor(uint16_t &depthRaw) {
   return false;
 }
 
+/* read soil sensor by RS-485, check CRC and fill global array 
+    soilSensorOut with data
+    call ith the number of  sensors in the node, but will work if one call with 2 has only one node
+    as the second one will not reply and it wil report as zero.
+    
+*/
+
 bool readSoilSensor(uint8_t sensNumber) {
   const uint8_t expected_len = 13;
   const uint8_t max_retries = 7;
   
   for (uint8_t depth = 0; depth < sensNumber; ++depth) {
-  for (uint8_t attempt = 0; attempt < max_retries; ++attempt) {
-    while (RS485_SERIAL.available()) RS485_SERIAL.read();  // Clear buffer
+    soilSensorOut[depth*1 + 0] = 0;  // clear old data
+		soilSensorOut[depth*1 + 1] = 0;  // 
+		soilSensorOut[depth*1 + 2] = 0;  // 
 
-    digitalWrite(RS485_TX_ENABLE, HIGH);
-    delay(10); // Settling time
-    RS485_SERIAL.write((depth == 0) ? aSoilSensShallow : aSoilSensDeep, sizeof(aSoilSensShallow));
-    ESP_LOGI("aSoilSensorShallow(len) %u; ", sizeof(aSoilSensShallow));
-    RS485_SERIAL.flush(true);
-    delayMicroseconds(200);
-    digitalWrite(RS485_TX_ENABLE, LOW);
+    for (uint8_t attempt = 0; attempt < max_retries; ++attempt) {
+      while (RS485_SERIAL.available()) RS485_SERIAL.read();  // Clear buffer
 
-    uint32_t start = millis();
-    while (RS485_SERIAL.available() < expected_len && millis() - start < 200) {
-      delay(1);
-    }
+      digitalWrite(RS485_TX_ENABLE, HIGH);
+      delay(10); // Settling time
+      RS485_SERIAL.write((depth == 0) ? aSoilSensShallow : aSoilSensDeep, sizeof((depth == 0) ? aSoilSensShallow : aSoilSensDeep));
+      ESP_LOGI("aSoilSensorShallow(len) %u; ", sizeof(aSoilSensShallow));
+      RS485_SERIAL.flush(true);
+      delayMicroseconds(200);
+      digitalWrite(RS485_TX_ENABLE, LOW);
 
-    if (RS485_SERIAL.available() >= expected_len) {
-      uint8_t response[expected_len];
-      for (int i = 0; i < expected_len; i++) {
-        response[i] = RS485_SERIAL.read();
+      uint32_t start = millis();
+      while (RS485_SERIAL.available() < expected_len && millis() - start < 200) {
+        delay(1);
       }
 
-      uint16_t crc = modbusCRC(response, expected_len - 2);
-      uint16_t received_crc = response[11] | (response[12] << 8);
+      if (RS485_SERIAL.available() >= expected_len) {
+        uint8_t response[expected_len];
+        for (int i = 0; i < expected_len; i++) {
+          response[i] = RS485_SERIAL.read();
+        }
 
-      if (crc == received_crc && response[0] == 0x01 && response[1] == 0x03) {
-        soilSensorOut[depth*1 + 0] = (uint8_t)(((response[3] << 8) | response[4]) / 10);  // moist as a byte
-		    soilSensorOut[depth*1 + 1] = (uint8_t)(((response[5] << 8) | response[6]) / 10);  // temp as a byte, bytes 7 and 8 are for EC, not on these sensors
-		    soilSensorOut[depth*1 + 2] = (uint8_t)(((response[9] << 8) | response[10]) / 10);  // pH as a byte
-        return true;
+        uint16_t crc = modbusCRC(response, expected_len - 2);
+        uint16_t received_crc = response[11] | (response[12] << 8);
+
+        if (crc == received_crc && response[0] == 0x01 && response[1] == 0x03) {
+          soilSensorOut[depth*1 + 0] = (uint8_t)(((response[3] << 8) | response[4]) / 10);  // moist as a byte
+		      soilSensorOut[depth*1 + 1] = (uint8_t)(((response[5] << 8) | response[6]) / 10);  // temp as a byte, bytes 7 and 8 are for EC, not on these sensors
+		      soilSensorOut[depth*1 + 2] = (uint8_t)(((response[9] << 8) | response[10]) / 10);  // pH as a byte
+          return true;
+        } else {
+          Serial.printf("Bad CRC or header on attempt %u\n", attempt + 1);
+        }
       } else {
-        Serial.printf("Bad CRC or header on attempt %u\n", attempt + 1);
+        Serial.printf("Timeout on attempt %u\n", attempt + 1);
       }
-    } else {
-      Serial.printf("Timeout on attempt %u\n", attempt + 1);
-    }
 
-    delay(50);  // Short retry delay
-  }  //  attempt loop
+      delay(50);  // Short retry delay
+    }  //  attempt loop
   }  //  depth loop
   
   Serial.println("Failed to read valid RS-485 response after retries");
