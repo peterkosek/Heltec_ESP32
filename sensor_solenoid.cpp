@@ -243,6 +243,7 @@ bool readDepthSensor(uint16_t &depthRaw) {
 bool readSoilSensor(uint8_t sensNumber) {
   const uint8_t expected_len = 13;
   const uint8_t max_retries = 7;
+  static const char *TAG = "Soil";
   
   for (uint8_t depth = 0; depth < sensNumber; ++depth) {
     soilSensorOut[depth*1 + 0] = 0;  // clear old data
@@ -255,7 +256,7 @@ bool readSoilSensor(uint8_t sensNumber) {
       digitalWrite(RS485_TX_ENABLE, HIGH);
       delay(10); // Settling time
       RS485_SERIAL.write((depth == 0) ? aSoilSensShallow : aSoilSensDeep, sizeof((depth == 0) ? aSoilSensShallow : aSoilSensDeep));
-      ESP_LOGI("aSoilSensorShallow(len) %u; ", sizeof(aSoilSensShallow));
+      ESP_LOGI(TAG, "aSoilSensShallow(len) %u; ", (unsigned)sizeof(aSoilSensShallow));
       RS485_SERIAL.flush(true);
       delayMicroseconds(200);
       digitalWrite(RS485_TX_ENABLE, LOW);
