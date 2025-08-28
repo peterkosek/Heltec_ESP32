@@ -21,17 +21,20 @@
 #define ADC_CTL_PIN     46  // to read bat voltage
 #define VBAT_READ_PIN   7   // read voltge divider with 100k/490k divider.  
 
-#define PULSE_THRESHOLD  10   // default, but MVS stores last uint16_t sent to port 8
+#define PULSE_THRESHOLD  100   // default, but MVS stores last uint16_t sent to port 8
                               // change this value to adjust the default wake-up count for the reed
 #define RTC_GPIO_SENSOR_PIN GPIO_NUM_17  // GPIO pin connected to the sensor for ulp
 #define RTC_GPIO_INDEX 17  //  RTCIO_CHANNEL_17 is 17
+
+//  the eink display ready pin, this is high when it is busy
+#define EPD_BUSY_PIN  6     // from display ctor (... busy=6 ...)
 
 // Optional power rails
 #define VDD_3V3         1
 #define GND             0
 
 // For the reed flow meter
-#define TICKS_PER_MIN   209354u      //  based on   I_DELAY(0x13dc), 3500 Hz   //  integer math please
+#define TICKS_PER_MIN   28800u      //  based on   I_DELAY(08FFF), 480 Hz   //  integer math please
 #define VOLUME_PER_TICK 100u         //  whatever the volume per tick of the meter is displayed as gpm
 
 // ADC (MCP3421) Settings
