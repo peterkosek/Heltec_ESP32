@@ -229,7 +229,7 @@ bool readDepthSensor(uint16_t &depthRaw) {
     delay(50);  // Short retry delay
   }
 
-  Serial.println("Failed to read valid response after retries");
+  Serial.println("Failed to read valid deth sensor rs-485 response after retries");
   return false;
 }
 
@@ -246,9 +246,10 @@ bool readSoilSensor(uint8_t sensNumber) {
   static const char *TAG = "Soil";
   
   for (uint8_t depth = 0; depth < sensNumber; ++depth) {
-    soilSensorOut[depth*1 + 0] = 0;  // clear old data
-		soilSensorOut[depth*1 + 1] = 0;  // 
-		soilSensorOut[depth*1 + 2] = 0;  // 
+
+    soilSensorOut[depth*1 + 0] = 0;  // clear old data  -  moist
+		soilSensorOut[depth*1 + 1] = 0;  // tempc
+		soilSensorOut[depth*1 + 2] = 0;  // pH
 
     for (uint8_t attempt = 0; attempt < max_retries; ++attempt) {
       while (RS485_SERIAL.available()) RS485_SERIAL.read();  // Clear buffer
@@ -278,7 +279,8 @@ bool readSoilSensor(uint8_t sensNumber) {
         if (crc == received_crc && response[0] == 0x01 && response[1] == 0x03) {
           soilSensorOut[depth*1 + 0] = (uint8_t)(((response[3] << 8) | response[4]) / 10);  // moist as a byte
 		      soilSensorOut[depth*1 + 1] = (uint8_t)(((response[5] << 8) | response[6]) / 10);  // temp as a byte, bytes 7 and 8 are for EC, not on these sensors
-		      soilSensorOut[depth*1 + 2] = (uint8_t)(((response[9] << 8) | response[10]) / 10);  // pH as a byte
+
+		      soilSensorOut[depth*1 + 2] = (uint8_t)(((response[9] << 8) | response[10]));  // pH as a byt
           return true;
         } else {
           Serial.printf("Bad CRC or header on attempt %u\n", attempt + 1);

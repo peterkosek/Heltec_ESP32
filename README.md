@@ -87,12 +87,13 @@ SOIL_SENSOR_NODE    10
 
 appPort map (udata from node), and target table in MySQL (active_devices is the device table)
 
+
 1:  (2) lora_e5 soil probes, no pH   :  soil_air_data
             dOut.update({'soilTempCS': int.from_bytes(byteDataIn[0:2], 'big') / 10})
             dOut.update({'soilMoistS': int.from_bytes(byteDataIn[2:4], 'big') / 10})
             dOut.update({'soilTempCD': int.from_bytes(byteDataIn[4:6], 'big') / 10})
             dOut.update({'soilMoistD': int.from_bytes(byteDataIn[6:8], 'big') / 10})
-            
+
 2:  valve node and pressure  :  valve_data
             dOut.update({'hFlow': int.from_bytes(byteDataIn[0:2], 'big') / 10})
             dOut.update({'hPress': int.from_bytes(byteDataIn[2:4], 'big') / 10})
@@ -101,7 +102,7 @@ appPort map (udata from node), and target table in MySQL (active_devices is the 
 3:  lake level  :  lake_data LAKE_NODE:  Uncaibrated 16 bit lake pressure for conversion to depth
             dOut.update({'lakePressUcal': int.from_bytes(byteDataIn[0:2], 'big')})
             dOut.update({'batPct': int.from_bytes(byteDataIn[2:3], 'big')})
-            
+
 4:
 
 5:  lora_e5 (2) soil one air  :  soil_air_data
@@ -112,7 +113,7 @@ appPort map (udata from node), and target table in MySQL (active_devices is the 
             dOut.update({'airTempC': round(int.from_bytes(byteDataIn[8:10], 'big') / 1000, 2)})
             dOut.update({'airMoist': round(int.from_bytes(byteDataIn[10:12], 'big') / 1000, 2)})
             dOut.update({'batPct': round(int.from_bytes(byteDataIn[12:13], 'big') / 2.55, 2)})
-            
+
 6:  SOIL_SENSOR_NODE
             dOut.update({'soilTempCS': int.from_bytes(byteDataIn[0:2], 'big') / 10})
             dOut.update({'soilMoistS': int.from_bytes(byteDataIn[2:4], 'big') / 10})
@@ -121,7 +122,7 @@ appPort map (udata from node), and target table in MySQL (active_devices is the 
             dOut.update({'airTempC': round(int.from_bytes(byteDataIn[8:10], 'big') / 1000, 2)})
             dOut.update({'airMoist': round(int.from_bytes(byteDataIn[10:12], 'big') / 1000, 2)})
             dOut.update({'batPct': round(int.from_bytes(byteDataIn[12:13], 'big'), 2)})
-            
+
 7: 
 
 8:  reed node  :  water_meter_data
@@ -130,13 +131,13 @@ appPort map (udata from node), and target table in MySQL (active_devices is the 
             dOut.update({'flowRate': int.from_bytes(byteDataIn[2:4], 'big')})
             dOut.update({'reedCount': int.from_bytes(byteDataIn[4:8], 'big')})
             dOut.update({'batPct': int.from_bytes(byteDataIn[8:9], 'big')})  
-            
+
 9:  valve node and pressure  :  valve_data
             dOut.update({'wPress': int.from_bytes(byteDataIn[0:2], 'big') / 10})
             dOut.update({'valveA': byteDataIn[2]})
             dOut.update({'valveB': byteDataIn[3]})
             dOut.update({'batPct': byteDataIn[4]})
-            
+
 10:  seeed weather station  :  s1000_data
             dOut.update({'airTemp': int.from_bytes(byteDataIn[0:2], 'big') / 100})
             dOut.update({'airHumid': int.from_bytes(byteDataIn[2:4], 'big') / 100})
@@ -155,7 +156,7 @@ appPort map (udata from node), and target table in MySQL (active_devices is the 
             dOut.update({'pm_2_5': int.from_bytes(byteDataIn[28:30], 'big') / 10})
             dOut.update({'pm_10': int.from_bytes(byteDataIn[30:32], 'big') / 10})
             dOut.update({'c02': int.from_bytes(byteDataIn[32:34], 'big') / 10})
-            
+
 11:  two rs-485 soil probes include pH  :  soil_air_data
             dOut.update({'soilMoistS': int.from_bytes(byteDataIn[0:1], 'big')})
             dOut.update({'soilTempCS': int.from_bytes(byteDataIn[1:2], 'big')})
@@ -165,6 +166,7 @@ appPort map (udata from node), and target table in MySQL (active_devices is the 
             dOut.update({'soilpHD': int.from_bytes(byteDataIn[5:6], 'big')/10})
             dOut.update({'batPct': int.from_bytes(byteDataIn[6:7], 'big')})
             
+
 12:  
 
             
